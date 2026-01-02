@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Image Satellite - Station Météo{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>Image Satellite (Couverture Nuageuse)</h2>
+    <p>Image fournie par OpenWeatherMap. Mise à jour périodique.</p>
+    
+    {% if image_files %}
+    <div class="graph-container">
+        <img id="satellite-animation" src="{{ url_for('static', filename=image_files[0].replace('static/', '')) }}" alt="Animation satellite" style="border: 1px solid #ccc;">
+        <div id="animation-controls">
+            <button id="play-pause-btn">Pause</button>
+            <span id="timestamp-display"></span>
+        </div>
+    </div>
+
+    <script>
+        const images = [
+            {% for image_path in image_files %}
+                "{{ url_for('static', filename=image_path.replace('static/', '')) }}",
+            {% endfor %}
+        ];
+
+        const satelliteImage = document.getElementById('satellite-animation');
+        const timestampDisplay = document.getElementById('timestamp-display');
+        const playPauseBtn = document.getElementById('play-pause-btn');
+
+        let currentIndex = 0;
+        let isPlaying = true;
+        let animationInterval;
+
+        function updateImage() {
+            satelliteImage.src = images[currentIndex];
+            
+            // Extrait et affiche le timestamp depuis le nom du fichier
+            const filename = images[currentIndex].split('/').pop();
+            const parts = filename.replace('satellite_', '').replace('.png', '').split('_');
+            const date = parts[0];
+            const time = parts[1];
+            const formattedTimestamp = `${date.slice(6,8)}/${date.slice(4,6)}/${date.slice(0,4)} ${time.slice(0,2)}:${time.slice(2,4)}`;
+            timestampDisplay.textContent = `Image du ${formattedTimestamp}`;
+
+            currentIndex = (currentIndex + 1) % images.length;
+        }
+
+        function togglePlayPause() {
+            if (isPlaying) {
+                clearInterval(animationInterval);
+                playPauseBtn.textContent = 'Play';
+            } else {
+                animationInterval = setInterval(updateImage, 800); // Change d'image toutes les 800ms
+                playPauseBtn.textContent = 'Pause';
+            }
+            isPlaying = !isPlaying;
+        }
+
+        playPauseBtn.addEventListener('click', togglePlayPause);
+        animationInterval = setInterval(updateImage, 800); // Démarrage automatique
+    </script>
+    {% else %}
+    <p>Aucune image satellite n'a encore été archivée. Veuillez patienter le temps de la première capture (jusqu'à 15 minutes).</p>
+    {% endif %}
+</div>
+{% endblock %}

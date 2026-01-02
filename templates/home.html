@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}Tableau de Bord - Station Météo{% endblock %}
+
+{% block content %}
+    <!-- La page se rafraîchira toutes les 60 secondes -->
+    <meta http-equiv="refresh" content="60">
+
+    <div class="card">
+        <h1>📡 Station météo</h1>
+        <div class="current-reading">
+            <h2>Relevés actuels</h2>
+            <p>🌡 {{ temp }} °C &nbsp;&nbsp;&nbsp; 💧 {{ hum }} %</p>
+            <p>📈 {{ pressure }} hPa &nbsp;&nbsp;&nbsp; 💨 {{ wind }} km/h ({{ wind_dir }})</p>
+            <p>🌧️ {{ rain }} mm (cumul 24h)</p>
+            <p class="last-update">Dernière mise à jour le {{ last_update }}</p>
+            {% if temp_hum_summary %}
+            <div class="trend-summary">
+                <p>{{ temp_hum_summary }}</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if prediction %}
+    <div class="card prediction">
+        <h2>Prévision locale</h2>
+        <p style="font-size: 1.2em; font-weight: normal;">{{ prediction }}</p>
+    </div>
+    {% endif %}
+
+    <div class="card rain-summary">
+        <h2>💧 Activité Pluviométrique Récente</h2>
+        <p>{{ rain_summary | safe }}</p>
+    </div>
+
+    <div class="card stats-container">
+        <h2>📊 Statistiques des températures</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Période</th>
+                    <th>Min (°C)</th>
+                    <th>Max (°C)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Aujourd'hui</td><td>{{ stats.day[0] }}</td><td>{{ stats.day[1] }}</td>
+                </tr>
+                <tr>
+                    <td>Cette semaine</td><td>{{ stats.week[0] }}</td><td>{{ stats.week[1] }}</td>
+                </tr>
+                <tr>
+                    <td>Ce mois</td><td>{{ stats.month[0] }}</td><td>{{ stats.month[1] }}</td>
+                </tr>
+            </tbody>
+        </table>
+        {% if stats_graph_html %}
+        <div class="graph-container" style="margin-top: 1em;">
+            <img src="{{ stats_graph_html }}" alt="Graphique des statistiques de température Min/Max">
+        </div>
+        {% endif %}
+    </div>
+{% endblock %}

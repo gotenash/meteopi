@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Station Météo{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    {% if current_user.is_authenticated %}
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <a href="{{ url_for('home') }}">Station Météo</a>
+        </div>
+        <ul class="navbar-nav">
+            <li><a href="{{ url_for('home') }}">Tableau de Bord</a></li>
+            <li class="dropdown"> 
+                <input type="checkbox" id="dropdown-toggle" class="dropdown-toggle">
+                <label for="dropdown-toggle" class="dropbtn">Graphiques</label>
+                <div class="dropdown-content">
+                    <a href="{{ url_for('hourly_graph') }}">Temp/Humidité (48h)</a>
+                    <a href="{{ url_for('pressure_graph') }}">Pression</a>
+                    <a href="{{ url_for('rain_graph') }}">Pluie</a>
+                    <a href="{{ url_for('wind_rose') }}">Vent</a>
+                </div>
+            </li> 
+            <li><a href="{{ url_for('satellite_page') }}">Satellite</a></li>
+            <li><a href="{{ url_for('history') }}">Historique</a></li>
+            <li><a href="{{ url_for('admin_page') }}">Administration</a></li>
+            <li><a href="{{ url_for('logout') }}">Déconnexion</a></li>
+        </ul>
+    </nav>
+    {% endif %}
+
+    <div class="container">
+        {# Affiche les messages flash (erreurs, succès, etc.) #}
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </div>
+
+    <footer>
+        <p>Station Météo - 2025</p>
+    </footer>
+</body>
+</html>

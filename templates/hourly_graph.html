@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block title %}Graphique Horaire - Station Météo{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>Graphique Température/Humidité (48 dernières heures)</h2>
+    {% if graph_html %}
+    <div class="graph-container">
+        <img src="{{ graph_html }}" alt="Graphique horaire des températures et de l'humidité">
+    </div>
+    {% else %}
+    <p>Données insuffisantes pour générer le graphique.</p>
+    {% endif %}
+</div>
+{% endblock %}

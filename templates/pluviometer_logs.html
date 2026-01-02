@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}Logs du Pluviomètre - Station Météo{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>Logs des basculements du pluviomètre</h2>
+    <p>Chaque ligne correspond à un basculement de l'auget, soit environ {{ "%.3f"|format(0.213) }} mm de pluie.</p>
+
+    <div class="stats-container" style="margin-bottom: 20px;">
+        <p><strong>Nombre total de basculements :</strong> {{ total_tips }}</p>
+        <p><strong>Cumul de pluie total enregistré :</strong> {{ total_rain }} mm</p>
+    </div>
+
+    <div class="log-content">
+        <pre>{{ logs_content }}</pre>
+    </div>
+
+    <div class="actions" style="margin-top: 20px;">
+        <form action="{{ url_for('admin_clear_pluviometer_logs') }}" method="POST" onsubmit="return confirm('Êtes-vous sûr de vouloir effacer les logs du pluviomètre ?');">
+            <button type="submit" class="btn btn-danger">Effacer les logs</button>
+        </form>
+    </div>
+</div>
+
+<style>
+.log-content {
+    background-color: #2b2b2b;
+    color: #f1f1f1;
+    padding: 15px;
+    border-radius: 5px;
+    text-align: left;
+    max-height: 500px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+</style>
+{% endblock %}

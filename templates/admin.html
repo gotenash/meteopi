@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}Administration - Station Météo{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>Administration</h2>
+    <p>Cette section permet d'effectuer des actions de maintenance sur la station météo.</p>
+</div>
+
+<div class="card">
+    <h3>Configuration Générale</h3>
+    <form action="{{ url_for('admin_update_config') }}" method="POST" class="config-form">
+        <div class="form-group">
+            <label for="latitude">Latitude</label>
+            <input type="text" id="latitude" name="latitude" value="{{ config.latitude }}" required>
+        </div>
+        <div class="form-group">
+            <label for="longitude">Longitude</label>
+            <input type="text" id="longitude" name="longitude" value="{{ config.longitude }}" required>
+        </div>
+        <div class="form-group">
+            <label for="owm_api_key">Clé API OpenWeatherMap</label>
+            <input type="text" id="owm_api_key" name="owm_api_key" value="{{ config.owm_api_key }}" required>
+        </div>
+        <button type="submit" class="btn">Sauvegarder la configuration</button>
+    </form>
+</div>
+
+
+<div class="card">
+    <h3>Gestion des données</h3>
+    <p>Attention : cette action effacera l'intégralité de l'historique des données météo et des logs du pluviomètre. Cette opération est irréversible.</p>
+    <form action="{{ url_for('admin_clear_data') }}" method="POST" onsubmit="return confirm('Êtes-vous sûr de vouloir effacer toutes les données ?');">
+        <button type="submit" class="btn btn-danger">Effacer toutes les données</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>Logs du pluviomètre</h3>
+    <p>Consultez les logs bruts des basculements du pluviomètre pour le débogage.</p>
+    <a href="{{ url_for('pluviometer_logs_page') }}" class="btn">Voir les logs du pluviomètre</a>
+</div>
+{% endblock %}

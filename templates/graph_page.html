@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - Station Météo{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>{{ title }}</h2>
+    {% if graph_html %}
+    <div class="graph-container">
+        <img src="{{ graph_html }}" alt="Graphique de {{ title }}">
+    </div>
+    {% else %}
+    <p>Données insuffisantes pour générer le graphique.</p>
+    {% endif %}
+</div>
+{% endblock %}
