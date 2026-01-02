@@ -110,11 +110,15 @@ login_manager.login_message_category = "info"
 
 # --- Modèle Utilisateur simple ---
 class User(UserMixin):
-    def __init__(self, id, username, password):
+    def __init__(self, id, username, password=None, password_hash=None):
         self.id = id
         self.username = username
-        # Ne stockez jamais de mots de passe en clair ! Utilisez un hash.
-        self.password_hash = generate_password_hash(password)
+        if password:
+            self.password_hash = generate_password_hash(password)
+        elif password_hash:
+            self.password_hash = password_hash
+        else:
+            self.password_hash = generate_password_hash("password")
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
@@ -125,11 +129,14 @@ PLUVIOMETER_EVENT_LOG = "pluviometer_events.log" # Chemin vers le fichier de log
 # Basé sur le test : 100ml d'eau (10mm) pour 53 basculements.
 MM_PER_TIP = 0.213 # Correction pour correspondre au capteur
 
-# --- Base de données utilisateur "en mémoire" ---
-# Pour un usage réel, il faudrait une base de données (SQLite, etc.)
-# Remplacez 'admin' et 'password' par vos identifiants
+# --- Base de données utilisateur ---
+# On récupère le hash depuis la config pour la persistance, sinon défaut "password"
+admin_hash = config.get('admin_password_hash')
+if not admin_hash:
+    admin_hash = generate_password_hash("password")
+
 users = {
-    "1": User(id="1", username="admin", password="password")
+    "1": User(id="1", username="admin", password_hash=admin_hash)
 }
 
 # On utilise maintenant les valeurs du fichier de configuration
@@ -137,15 +144,16 @@ OWM_API_KEY = config.get("owm_api_key")
 LATITUDE = config.get("latitude")
 LONGITUDE = config.get("longitude")
 
-def generate_hourly_graph_base64(input_df):
+def generate_hourly_graph_base64(input_df, filter_recent=True, title="Données météo agrégées par heure (48 dernières heures)"):
     """Génère un graphique horaire à partir du DataFrame et le retourne en base64."""
     if input_df.empty:
         return None
 
     df = input_df.copy()
-    # Filtrer les données des dernières 48 heures
-    forty_eight_hours_ago = datetime.now() - timedelta(hours=48)
-    df = df[df['time'] > forty_eight_hours_ago]
+    if filter_recent:
+        # Filtrer les données des dernières 48 heures
+        forty_eight_hours_ago = datetime.now() - timedelta(hours=48)
+        df = df[df['time'] > forty_eight_hours_ago]
 
     df.set_index('time', inplace=True)
 
@@ -184,7 +192,7 @@ def generate_hourly_graph_base64(input_df):
 
     fig.legend(loc="upper left", bbox_to_anchor=(0.1, 0.9))
     plt.xticks(rotation=70, ha="right")
-    plt.title("Données météo agrégées par heure (48 dernières heures)")
+    plt.title(title)
     plt.tight_layout()
 
     return _save_graph_to_base64(fig)
@@ -489,12 +497,70 @@ def login():
 
     return render_template('login.html')
 
+# --- Fonctions utilitaires pour les couleurs dynamiques ---
+def get_color_from_value(value):
+    """Retourne une couleur (r,g,b) interpolée pour une température donnée."""
+    # Pivots : (Température, R, G, B)
+    # On définit ici l'échelle de couleur : Bleu < 0, Vert ~10, Jaune ~18, Rouge > 25
+    stops = [
+        (-10, 52, 152, 219), # #3498db Blue (Froid)
+        (0,   52, 152, 219), # #3498db Blue (Zéro)
+        (10,  46, 204, 113), # #2ecc71 Green (Frais)
+        (18,  241, 196, 15), # #f1c40f Yellow (Doux)
+        (25,  231, 76, 60),  # #e74c3c Red (Chaud)
+        (40,  231, 76, 60)   # #e74c3c Red (Très chaud)
+    ]
+    
+    # Si hors limites, on prend la couleur extrême
+    if value <= stops[0][0]: return stops[0][1:]
+    if value >= stops[-1][0]: return stops[-1][1:]
+    
+    # Interpolation linéaire entre deux pivots
+    for i in range(len(stops) - 1):
+        t1, r1, g1, b1 = stops[i]
+        t2, r2, g2, b2 = stops[i+1]
+        if t1 <= value <= t2:
+            ratio = (value - t1) / (t2 - t1)
+            r = int(r1 + (r2 - r1) * ratio)
+            g = int(g1 + (g2 - g1) * ratio)
+            b = int(b1 + (b2 - b1) * ratio)
+            return (r, g, b)
+    return (128, 128, 128) # Gris par défaut
+
+def rgb_to_hex(rgb):
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+def get_temp_gradient(min_t, max_t):
+    """Génère un string CSS linear-gradient dynamique."""
+    stops_vals = [0, 10, 18, 25] # Les températures pivots à inclure dans le dégradé
+    gradient_parts = []
+    
+    # Couleur de début (Min)
+    c_start = rgb_to_hex(get_color_from_value(min_t))
+    gradient_parts.append(f"{c_start} 0%")
+    
+    # Ajout des pivots intermédiaires s'ils sont dans la plage [min_t, max_t]
+    range_t = max_t - min_t
+    if range_t > 0.1:
+        for stop in stops_vals:
+            if min_t < stop < max_t:
+                pct = (stop - min_t) / range_t * 100
+                c_stop = rgb_to_hex(get_color_from_value(stop))
+                gradient_parts.append(f"{c_stop} {pct:.1f}%")
+    
+    # Couleur de fin (Max)
+    c_end = rgb_to_hex(get_color_from_value(max_t))
+    gradient_parts.append(f"{c_end} 100%")
+    
+    return f"linear-gradient(90deg, {', '.join(gradient_parts)})"
+
 @app.route("/")
 @login_required
 def home():
     # Initialisation des variables
     temp, hum, pressure, rain, wind, wind_dir, last_update, prediction, rain_summary, temp_hum_summary = "N/A", "N/A", "N/A", "N/A", "N/A", "", "inconnue", None, "Analyse en cours...", None
-    stats = {'day': ('N/A', 'N/A'), 'week': ('N/A', 'N/A'), 'month': ('N/A', 'N/A')}
+    stats = {}
+    scale_min, scale_max = 100, -100 # Valeurs initiales pour déterminer l'échelle des barres
 
     try:
         # On lit le CSV en spécifiant les 7 colonnes écrites par le capteur
@@ -503,6 +569,10 @@ def home():
             # Conversion des types, en gérant les erreurs
             df['time'] = pd.to_datetime(df['time'], errors='coerce')
             df['pressure'] = pd.to_numeric(df['pressure'], errors='coerce')
+            df['temp'] = pd.to_numeric(df['temp'], errors='coerce')
+            df['hum'] = pd.to_numeric(df['hum'], errors='coerce')
+            df['rain'] = pd.to_numeric(df['rain'], errors='coerce')
+            df['wind_speed'] = pd.to_numeric(df['wind_speed'], errors='coerce')
             df.dropna(subset=['time'], inplace=True) # On supprime les lignes où la date est invalide
 
             last_reading = df.iloc[-1]
@@ -520,24 +590,84 @@ def home():
             # --- Calcul des statistiques Min/Max ---
             now = datetime.now()
             
-            # Jour
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            df_today = df[df['time'] >= today_start]
-            if not df_today.empty:
-                stats['day'] = (f"{df_today['temp'].min():.1f}", f"{df_today['temp'].max():.1f}")
+            periods = [
+                ('day', "Aujourd'hui", now.replace(hour=0, minute=0, second=0, microsecond=0)),
+                ('week', "Semaine", (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)),
+                ('month', "Mois", now.replace(day=1, hour=0, minute=0, second=0, microsecond=0))
+            ]
 
-            # Semaine (commence le Lundi)
-            week_start = today_start - timedelta(days=now.weekday())
-            df_week = df[df['time'] >= week_start]
-            if not df_week.empty:
-                stats['week'] = (f"{df_week['temp'].min():.1f}", f"{df_week['temp'].max():.1f}")
+            for key, label, start_time in periods:
+                df_period = df[df['time'] >= start_time]
+                if not df_period.empty:
+                    p_min = df_period['temp'].min()
+                    p_max = df_period['temp'].max()
+                    
+                    # Détermination de l'icône météo
+                    rain_sum = df_period['rain'].sum()
+                    press_mean = df_period['pressure'].mean()
+                    if rain_sum > 0.2:
+                        icon = "🌧️"
+                    elif pd.notna(press_mean) and press_mean < 1015:
+                        icon = "☁️"
+                    else:
+                        icon = "☀️"
 
-            # Mois
-            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            df_month = df[df['time'] >= month_start]
-            if not df_month.empty:
-                stats['month'] = (f"{df_month['temp'].min():.1f}", f"{df_month['temp'].max():.1f}")
+                    stats[key] = {
+                        'label': label,
+                        'min': p_min,
+                        'max': p_max,
+                        'min_str': f"{p_min:.1f}",
+                        'max_str': f"{p_max:.1f}",
+                        'icon': icon,
+                        'rain_total': rain_sum,
+                        'date_iso': now.strftime('%Y-%m-%d') if key == 'day' else None,
+                        'gradient': get_temp_gradient(p_min, p_max)
+                    }
+                    # Mise à jour de l'échelle globale
+                    if p_min < scale_min: scale_min = p_min
+                    if p_max > scale_max: scale_max = p_max
 
+            # --- Ajout des 5 derniers jours ---
+            days_fr = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+            for i in range(1, 6):
+                d = now - timedelta(days=i)
+                start = d.replace(hour=0, minute=0, second=0, microsecond=0)
+                end = d.replace(hour=23, minute=59, second=59, microsecond=999999)
+                
+                df_day = df[(df['time'] >= start) & (df['time'] <= end)]
+                
+                if not df_day.empty:
+                    p_min = df_day['temp'].min()
+                    p_max = df_day['temp'].max()
+                    
+                    # Détermination de l'icône météo
+                    rain_sum = df_day['rain'].sum()
+                    press_mean = df_day['pressure'].mean()
+                    if rain_sum > 0.2:
+                        icon = "🌧️"
+                    elif pd.notna(press_mean) and press_mean < 1015:
+                        icon = "☁️"
+                    else:
+                        icon = "☀️"
+
+                    stats[f'day_{i}'] = {
+                        'label': days_fr[d.weekday()],
+                        'min': p_min,
+                        'max': p_max,
+                        'min_str': f"{p_min:.1f}",
+                        'max_str': f"{p_max:.1f}",
+                        'icon': icon,
+                        'rain_total': rain_sum,
+                        'date_iso': d.strftime('%Y-%m-%d'),
+                        'gradient': get_temp_gradient(p_min, p_max)
+                    }
+                    if p_min < scale_min: scale_min = p_min
+                    if p_max > scale_max: scale_max = p_max
+
+            # Ajout d'une petite marge pour l'affichage graphique
+            if scale_min != 100: scale_min -= 2
+            if scale_max != -100: scale_max += 2
+            
             # Génération de la prédiction (uniquement si des données de pression existent)
             prediction = get_weather_prediction(df)
 
@@ -548,11 +678,10 @@ def home():
         pass
     
     # On déplace les appels aux fonctions d'analyse ici pour plus de clarté
-    stats_graph_html = generate_stats_graph_base64(stats) if 'df' in locals() and not df.empty else None
     rain_summary = get_rain_summary(df) if 'df' in locals() and not df.empty else "Données non disponibles."
     temp_hum_summary = get_temp_hum_summary(df) if 'df' in locals() and not df.empty else None
     
-    return render_template("home.html", temp=temp, hum=hum, pressure=pressure, rain=rain, wind=wind, wind_dir=wind_dir, last_update=last_update, stats_graph_html=stats_graph_html, prediction=prediction, stats=stats, rain_summary=rain_summary, temp_hum_summary=temp_hum_summary)
+    return render_template("home.html", temp=temp, hum=hum, pressure=pressure, rain=rain, wind=wind, wind_dir=wind_dir, last_update=last_update, prediction=prediction, stats=stats, scale_min=scale_min, scale_max=scale_max, rain_summary=rain_summary, temp_hum_summary=temp_hum_summary)
 
 @app.route("/pluviometer_logs")
 @login_required
@@ -689,6 +818,34 @@ def admin_update_config():
         flash(f"Une erreur est survenue : {e}", "danger")
     return redirect(url_for('admin_page'))
 
+@app.route('/admin/change_password', methods=['POST'])
+@login_required
+def admin_change_password():
+    """Change le mot de passe de l'administrateur."""
+    current_password = request.form.get('current_password')
+    new_password = request.form.get('new_password')
+    confirm_password = request.form.get('confirm_password')
+
+    # Vérification du mot de passe actuel
+    if not current_user.check_password(current_password):
+        flash("Le mot de passe actuel est incorrect.", "danger")
+        return redirect(url_for('admin_page'))
+
+    if new_password != confirm_password:
+        flash("Les nouveaux mots de passe ne correspondent pas.", "danger")
+        return redirect(url_for('admin_page'))
+
+    # Mise à jour du hash
+    new_hash = generate_password_hash(new_password)
+    
+    # Mise à jour en mémoire et dans la config
+    users[current_user.id].password_hash = new_hash
+    config['admin_password_hash'] = new_hash
+    save_config(config)
+
+    flash("Mot de passe modifié avec succès.", "success")
+    return redirect(url_for('admin_page'))
+
 @app.route("/download")
 @login_required
 def download():
@@ -707,6 +864,37 @@ def hourly_graph():
     except (FileNotFoundError, pd.errors.EmptyDataError):
         pass
     return render_template("hourly_graph.html", graph_html=graph_html)
+
+@app.route("/daily_graph")
+@login_required
+def daily_graph():
+    """Affiche le graphique détaillé pour une journée spécifique."""
+    date_str = request.args.get('date')
+    if not date_str:
+        return redirect(url_for('home'))
+        
+    graph_html = None
+    title = f"Météo du {date_str}"
+    
+    try:
+        target_date = datetime.strptime(date_str, '%Y-%m-%d')
+        start_day = target_date.replace(hour=0, minute=0, second=0)
+        end_day = target_date.replace(hour=23, minute=59, second=59)
+        
+        df = pd.read_csv(CSV_FILE, header=0, names=["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_dir_str"], on_bad_lines='skip')
+        if not df.empty:
+            df['time'] = pd.to_datetime(df['time'], errors='coerce')
+            df['temp'] = pd.to_numeric(df['temp'], errors='coerce')
+            df['hum'] = pd.to_numeric(df['hum'], errors='coerce')
+            df['rain'] = pd.to_numeric(df['rain'], errors='coerce')
+            
+            df_day = df[(df['time'] >= start_day) & (df['time'] <= end_day)]
+            if not df_day.empty:
+                graph_html = generate_hourly_graph_base64(df_day, filter_recent=False, title=f"Données horaires du {date_str}")
+    except (ValueError, FileNotFoundError, pd.errors.EmptyDataError):
+        pass
+        
+    return render_template("graph_page.html", title=title, graph_html=graph_html)
 
 @app.route("/wind_rose")
 @login_required

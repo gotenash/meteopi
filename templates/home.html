@@ -6,60 +6,169 @@
     <!-- La page se rafraîchira toutes les 60 secondes -->
     <meta http-equiv="refresh" content="60">
 
-    <div class="card">
-        <h1>📡 Station météo</h1>
-        <div class="current-reading">
-            <h2>Relevés actuels</h2>
-            <p>🌡 {{ temp }} °C &nbsp;&nbsp;&nbsp; 💧 {{ hum }} %</p>
-            <p>📈 {{ pressure }} hPa &nbsp;&nbsp;&nbsp; 💨 {{ wind }} km/h ({{ wind_dir }})</p>
-            <p>🌧️ {{ rain }} mm (cumul 24h)</p>
-            <p class="last-update">Dernière mise à jour le {{ last_update }}</p>
-            {% if temp_hum_summary %}
-            <div class="trend-summary">
-                <p>{{ temp_hum_summary }}</p>
+    <style>
+        /* Mise en page 2 colonnes responsive */
+        .dashboard-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            align-items: flex-start;
+        }
+        .dashboard-column {
+            flex: 1;
+            min-width: 300px; /* Passe en colonne unique sur mobile */
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        /* Styles spécifiques pour les cartes compactes */
+        .card h1, .card h2, .card h3 {
+            margin-top: 0;
+        }
+
+        /* Style des barres de température */
+        .temp-bar-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+            font-size: 0.95em;
+        }
+        .temp-label {
+            width: 110px;
+            font-weight: bold;
+            color: #555;
+        }
+        .temp-val {
+            width: 45px;
+            text-align: center;
+            font-weight: 500;
+        }
+        .bar-track {
+            flex-grow: 1;
+            background-color: #e0e0e0;
+            height: 8px;
+            border-radius: 4px;
+            margin: 0 10px;
+            position: relative;
+            overflow: hidden;
+        }
+        .bar-fill {
+            position: absolute;
+            height: 100%;
+            /* Dégradé du bleu (froid) vers le rouge (chaud) */
+            background: linear-gradient(90deg, #3498db, #e74c3c);
+            border-radius: 4px;
+            opacity: 0.85;
+        }
+        
+        /* Style résumé météo */
+        .weather-main {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .weather-temp {
+            font-size: 3em;
+            font-weight: bold;
+            color: #333;
+        }
+        .weather-details {
+            text-align: right;
+            font-size: 1.1em;
+            line-height: 1.4;
+            color: #555;
+        }
+        .weather-secondary {
+            display: flex;
+            justify-content: space-between;
+            background: #f9f9f9;
+            padding: 10px;
+            border-radius: 8px;
+            font-weight: 500;
+        }
+    </style>
+
+    <div class="dashboard-container">
+        <!-- Colonne Gauche : Résumé actuel -->
+        <div class="dashboard-column">
+            <div class="card">
+                <h1>📡 Station Météo</h1>
+                
+                <div class="weather-main">
+                    <div class="weather-temp">{{ temp }}°C</div>
+                    <div class="weather-details">
+                        <div>💧 {{ hum }} %</div>
+                        <div>📈 {{ pressure }} hPa</div>
+                    </div>
+                </div>
+
+                <div class="weather-secondary">
+                    <div>💨 {{ wind }} km/h ({{ wind_dir }})</div>
+                    <div>🌧️ {{ rain }} mm (24h)</div>
+                </div>
+
+                <div style="margin-top: 15px; font-size: 0.85em; color: #777; display: flex; justify-content: space-between;">
+                    <span>Maj: {{ last_update }}</span>
+                    {% if temp_hum_summary %}
+                    <span style="font-style: italic;">{{ temp_hum_summary }}</span>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="card rain-summary">
+                <h3>🌧️ Activité Pluie (24h)</h3>
+                <div style="font-size: 0.9em; line-height: 1.4;">
+                    {{ rain_summary | safe }}
+                </div>
+            </div>
+        </div>
+
+        <!-- Colonne Droite : Prévisions et Stats -->
+        <div class="dashboard-column">
+            {% if prediction %}
+            <div class="card prediction">
+                <h3>🔮 Prévision Locale</h3>
+                <p style="font-size: 1.1em; margin-bottom: 0;">{{ prediction }}</p>
             </div>
             {% endif %}
+
+            <div class="card stats-container">
+                <h3>📊 Écarts de Température</h3>
+                {% if stats %}
+                    {% for key in ['day', 'day_1', 'day_2', 'day_3', 'day_4', 'day_5', 'week', 'month'] %}
+                        {% if stats[key] %}
+                            {% set s = stats[key] %}
+                            {# Calcul des pourcentages pour la barre CSS #}
+                            {% set range_val = scale_max - scale_min %}
+                            {% if range_val == 0 %}{% set range_val = 1 %}{% endif %}
+                            {% set left_pct = ((s.min - scale_min) / range_val) * 100 %}
+                            {% set width_pct = ((s.max - s.min) / range_val) * 100 %}
+                            
+                            {% if s.date_iso %}
+                            <a href="{{ url_for('daily_graph', date=s.date_iso) }}" style="text-decoration: none; color: inherit; display: block;" title="Cliquez pour voir le graphique détaillé">
+                            {% endif %}
+                            
+                            <div class="temp-bar-row">
+                                <div class="temp-label" title="Pluie : {{ '%.2f'|format(s.rain_total) }} mm">{{ s.icon }} {{ s.label }}</div>
+                                <div class="temp-val">{{ s.min_str }}°</div>
+                                <div class="bar-track">
+                                    <!-- La barre colorée positionnée dynamiquement -->
+                                    <div class="bar-fill" style="left: {{ left_pct }}%; width: {{ width_pct }}%; background: {{ s.gradient }};"></div>
+                                </div>
+                                <div class="temp-val">{{ s.max_str }}°</div>
+                            </div>
+                            
+                            {% if s.date_iso %}
+                            </a>
+                            {% endif %}
+                        {% endif %}
+                    {% endfor %}
+                {% else %}
+                    <p>Pas de données statistiques disponibles.</p>
+                {% endif %}
+            </div>
         </div>
-    </div>
-
-    {% if prediction %}
-    <div class="card prediction">
-        <h2>Prévision locale</h2>
-        <p style="font-size: 1.2em; font-weight: normal;">{{ prediction }}</p>
-    </div>
-    {% endif %}
-
-    <div class="card rain-summary">
-        <h2>💧 Activité Pluviométrique Récente</h2>
-        <p>{{ rain_summary | safe }}</p>
-    </div>
-
-    <div class="card stats-container">
-        <h2>📊 Statistiques des températures</h2>
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Période</th>
-                    <th>Min (°C)</th>
-                    <th>Max (°C)</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td>Aujourd'hui</td><td>{{ stats.day[0] }}</td><td>{{ stats.day[1] }}</td>
-                </tr>
-                <tr>
-                    <td>Cette semaine</td><td>{{ stats.week[0] }}</td><td>{{ stats.week[1] }}</td>
-                </tr>
-                <tr>
-                    <td>Ce mois</td><td>{{ stats.month[0] }}</td><td>{{ stats.month[1] }}</td>
-                </tr>
-            </tbody>
-        </table>
-        {% if stats_graph_html %}
-        <div class="graph-container" style="margin-top: 1em;">
-            <img src="{{ stats_graph_html }}" alt="Graphique des statistiques de température Min/Max">
-        </div>
-        {% endif %}
     </div>
 {% endblock %}

@@ -4,6 +4,9 @@
 
 {% block content %}
 <div class="login-container">
+    <div style="text-align: center; margin-bottom: 15px;">
+        <img src="{{ url_for('static', filename='img/meteopi.png') }}" alt="Logo MeteoPi" width="120">
+    </div>
     <h2>Connexion</h2>
     <form method="POST" action="{{ url_for('login') }}">
         <div class="form-group">

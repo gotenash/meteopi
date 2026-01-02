@@ -6,6 +6,10 @@
 
 Un projet complet de station météo basé sur Raspberry Pi, comprenant la collecte locale de données de capteurs, un tableau de bord web avec graphiques historiques et l'intégration d'images satellites.
 
+<p align="center">
+  <img src="static/img/interface.png" alt="Interface du Tableau de Bord" width="800"/>
+</p>
+
 > **Note :** Ce projet est actuellement au stade de **développement**.
 
 ## 🌟 Fonctionnalités

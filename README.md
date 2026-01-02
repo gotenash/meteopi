@@ -6,6 +6,10 @@
 
 A complete weather station project based on Raspberry Pi, featuring local sensor data collection, a web dashboard with historical graphs, and satellite imagery integration.
 
+<p align="center">
+  <img src="static/img/interface.png" alt="Dashboard Interface" width="800"/>
+</p>
+
 > **Note:** This project is currently in the **development stage**.
 
 ## 🌟 Features
