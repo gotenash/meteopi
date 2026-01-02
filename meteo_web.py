@@ -836,7 +836,7 @@ def api_sensors():
 @app.route('/favicon.ico')
 def favicon():
     """Route pour servir le logo comme favicon (icône de l'onglet)."""
-    return send_file(os.path.join(app.root_path, 'static', 'img', 'meteoppi.png'), mimetype='image/png')
+    return send_file(os.path.join(app.root_path, 'static', 'img', 'meteopi.png'), mimetype='image/png')
 
 
 if __name__ == "__main__":

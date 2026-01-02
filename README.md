@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="static/img/meteoppi.png" alt="MeteoPi Logo" width="150"/>
+  <img src="static/img/meteopi.png" alt="MeteoPi Logo" width="150"/>
 </p>
 
 # Raspberry Pi Weather Station
