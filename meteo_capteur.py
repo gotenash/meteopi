@@ -36,7 +36,9 @@ tip_count_lock = threading.Lock()
 
 # ---- Configuration de l'anémomètre ----
 WIND_PIN = 6 # GPIO 6
-WIND_SPEED_FACTOR = 2.4 # 1 Hz (1 impulsion/sec) = 2.4 km/h
+# Facteur de calibration : Vitesse (km/h) = Fréquence (Hz) * FACTEUR
+# Pour calibrer : Nouveau_Facteur = Actuel * (Vitesse_Réelle / Vitesse_Affichée)
+WIND_SPEED_FACTOR = 2.4
 
 # Variable globale pour compter les impulsions du vent
 wind_pulse_count = 0
@@ -174,10 +176,11 @@ def sample_and_log():
 
     temp, hum, pressure = read_sensors()
 
-    if temp is None or hum is None:
-        print("Données capteur invalides, mesure ignorée pour cet intervalle.")
-        # On ne réinitialise pas les compteurs de vent/pluie pour ne pas perdre de données
-        return
+    # Si les capteurs T/H ne répondent pas, on continue quand même pour enregistrer le vent/pluie
+    if temp is None:
+        print("⚠️ Attention: Température non lue (None).")
+    if hum is None:
+        print("⚠️ Attention: Humidité non lue (None).")
 
     # --- Calculs et réinitialisations ---
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -198,13 +201,18 @@ def sample_and_log():
 
     # --- Enregistrement et affichage ---
     pressure_val = f"{pressure:.2f}" if pressure is not None else ""
+    temp_val = f"{temp:.2f}" if temp is not None else ""
+    hum_val = f"{hum:.2f}" if hum is not None else ""
+
     with open(CSV_FILE, "a", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([now, f"{temp:.2f}", f"{hum:.2f}", pressure_val, f"{rain_since_last:.4f}", f"{wind_speed_kmh:.2f}", wind_dir_str])
+        writer.writerow([now, temp_val, hum_val, pressure_val, f"{rain_since_last:.4f}", f"{wind_speed_kmh:.2f}", wind_dir_str])
         f.flush()
 
     pressure_str = f"📈 {pressure:.1f}hPa" if pressure is not None else ""
-    print(f"[{now}] 🌡 {temp:.1f}°C  💧 {hum:.0f}%  {pressure_str} 🌧️ {rain_since_last:.2f}mm 💨 {wind_speed_kmh:.1f} km/h ({wind_dir_str})")
+    temp_str = f"{temp:.1f}°C" if temp is not None else "N/A"
+    hum_str = f"{hum:.0f}%" if hum is not None else "N/A"
+    print(f"[{now}] 🌡 {temp_str}  💧 {hum_str}  {pressure_str} 🌧️ {rain_since_last:.2f}mm 💨 {wind_speed_kmh:.1f} km/h ({wind_dir_str})")
 
     # Variable pour alterner l'affichage sur l'écran LCD
     global lcd_display_toggle
@@ -213,15 +221,15 @@ def sample_and_log():
     if lcd:
         try:
             # On change la couleur de fond en fonction de la température
-            if temp < 10:
+            if temp is not None and temp < 10:
                 lcd.set_rgb(0, 0, 255) # Bleu pour le froid
-            elif temp > 25:
+            elif temp is not None and temp > 25:
                 lcd.set_rgb(255, 100, 0) # Orange pour le chaud
             else:
                 lcd.set_rgb(0, 150, 50) # Vert pour le tempéré
 
             lcd.clear()
-            line1 = f"T:{temp:.1f}C  H:{hum:.0f}%"
+            line1 = f"T:{temp_str} H:{hum_str}"
             
             # On alterne l'affichage de la deuxième ligne
             if lcd_display_toggle and pressure is not None:

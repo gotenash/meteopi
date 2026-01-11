@@ -1,31 +1,41 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from gpiozero import Button
-from signal import pause
 import time
 
 # ---- Configuration ----
-# Assurez-vous que ce pin correspond à votre câblage
+# GPIO 6 selon votre README
 WIND_PIN = 6
+INTERVAL = 2 # Intervalle de mise à jour en secondes pour le test
+WIND_SPEED_FACTOR = 2.4 # Doit correspondre à celui de meteo_capteur.py
 
-def magnet_pressed():
-    """
-    Cette fonction est appelée instantanément à chaque passage de l'aimant.
-    """
-    print(f"[{time.time():.2f}] ✅ PRESSED: Aimant détecté !")
+wind_count = 0
 
-def magnet_released():
-    """
-    Cette fonction est appelée quand l'aimant s'éloigne.
-    """
-    print(f"[{time.time():.2f}] ⚪️ RELEASED: L'aimant s'est éloigné.")
+def spin_detected():
+    global wind_count
+    wind_count += 1
 
 print("--- Script de test de l'anémomètre ---")
-print(f"En écoute des impulsions sur le GPIO {WIND_PIN}...")
-print("Passez un aimant devant le capteur à effet Hall.")
+print(f"Connecté sur le GPIO {WIND_PIN}")
+print("Faites tourner l'anémomètre...")
 print("Appuyez sur Ctrl+C pour quitter.")
 
-wind_sensor = Button(WIND_PIN, pull_up=True, bounce_time=0.01)
-wind_sensor.when_pressed = magnet_pressed
-wind_sensor.when_released = magnet_released
+# L'anémomètre peut tourner vite, on met un bounce_time très court
+sensor = Button(WIND_PIN, pull_up=True, bounce_time=0.01)
+sensor.when_pressed = spin_detected
 
-pause() # Met le script en pause en attendant les événements
+try:
+    while True:
+        wind_count = 0
+        time.sleep(INTERVAL)
+        
+        # Formule approximative : 1 impulsion/sec ~= 2.4 km/h (dépend du modèle 3D)
+        speed_kmh = (wind_count / INTERVAL) * WIND_SPEED_FACTOR
+        
+        if wind_count > 0:
+            print(f"✅ Rotation détectée ! {wind_count} impulsions -> Vitesse estimée : {speed_kmh:.1f} km/h")
+        else:
+            print("... En attente de rotation ...")
+
+except KeyboardInterrupt:
+    print("\nFin du test.")

@@ -29,6 +29,10 @@ fi
 
 log_info "Démarrage de l'installation de la station météo pour Raspberry Pi 2..."
 
+# --- Détection de la configuration ---
+REAL_USER="${SUDO_USER:-$(whoami)}"
+PROJECT_DIR=$(pwd)
+
 # --- 0. Configuration des sources APT ---
 log_info "Vérification et configuration des sources de paquets (APT)..."
 
@@ -89,21 +93,21 @@ fi
 log_info "Lancement de l'installation des dépendances Python en tant qu'utilisateur '$SUDO_USER'..."
 
 # On exécute la partie non-root du script en tant que l'utilisateur original
-sudo -u "$SUDO_USER" bash <<'EOF'
+sudo -u "$SUDO_USER" bash <<EOF
 
 echo -e "\e[32m[INFO]\e[0m Nettoyage et création de l'environnement virtuel..."
 # On se place dans le bon répertoire
-cd "/home/meteo/station-meteo" || exit 1
+cd "$PROJECT_DIR" || exit 1
 
 # On supprime l'ancien environnement virtuel pour garantir une installation propre
 rm -rf venv
 
 # Création de l'environnement virtuel avec accès aux paquets système
 python3 -m venv venv --system-site-packages
-if [ $? -ne 0 ]; then echo -e "\e[31m[ERROR]\e[0m Échec de la création de venv."; exit 1; fi
+if [ \$? -ne 0 ]; then echo -e "\e[31m[ERROR]\e[0m Échec de la création de venv."; exit 1; fi
 
 source venv/bin/activate
-if [ $? -ne 0 ]; then echo -e "\e[31m[ERROR]\e[0m Échec de l'activation de venv."; exit 1; fi
+if [ \$? -ne 0 ]; then echo -e "\e[31m[ERROR]\e[0m Échec de l'activation de venv."; exit 1; fi
 
 echo -e "\e[32m[INFO]\e[0m Mise à jour de pip..."
 pip install --upgrade pip
@@ -111,7 +115,7 @@ pip install --upgrade pip
 echo -e "\e[32m[INFO]\e[0m Installation des dépendances Python restantes..."
 # On n'installe plus numpy, pandas, et matplotlib car ils sont fournis par le système
 pip install gpiozero smbus2 adafruit-circuitpython-dht adafruit-circuitpython-bme280 adafruit-circuitpython-as5600 flask flask-login werkzeug requests Pillow gunicorn
-if [ $? -ne 0 ]; then echo -e "\e[31m[ERROR]\e[0m Échec de l'installation des dépendances Python."; exit 1; fi
+if [ \$? -ne 0 ]; then echo -e "\e[31m[ERROR]\e[0m Échec de l'installation des dépendances Python."; exit 1; fi
 
 echo -e "\e[32m[INFO]\e[0m Installation des dépendances Python terminée."
 EOF
@@ -123,7 +127,7 @@ log_info "Configuration de Nginx..."
 rm -f /etc/nginx/sites-enabled/default
 
 # Crée le fichier de configuration pour notre application
-cat <<'EOF' > /etc/nginx/sites-available/station-meteo
+cat <<EOF > /etc/nginx/sites-available/station-meteo
 server {
     listen 80;
     server_name _;
@@ -134,7 +138,7 @@ server {
     }
 
     location /static {
-        alias /home/meteo/station-meteo/static;
+        alias $PROJECT_DIR/static;
     }
 }
 EOF
@@ -143,11 +147,11 @@ EOF
 ln -s -f /etc/nginx/sites-available/station-meteo /etc/nginx/sites-enabled/
 
 # Donne à Nginx la permission de lire les fichiers statiques
-chmod 755 /home/meteo
+chmod 755 $(dirname "$PROJECT_DIR")
 
 # --- 6. Création des services systemd (optionnel mais recommandé) ---
 log_info "Création des services systemd pour le capteur et l'application web..."
-BASE_DIR="/home/meteo/station-meteo"
+BASE_DIR="$PROJECT_DIR"
 PYTHON_EXEC="$BASE_DIR/venv/bin/python"
 GUNICORN_EXEC="$BASE_DIR/venv/bin/gunicorn"
 
@@ -169,8 +173,8 @@ After=network.target
 ExecStart=$PYTHON_EXEC $BASE_DIR/meteo_capteur.py
 WorkingDirectory=$BASE_DIR
 Restart=always
-User=meteo
-Group=meteo
+User=$REAL_USER
+Group=$REAL_USER
 
 [Install]
 WantedBy=multi-user.target
@@ -186,8 +190,8 @@ After=network.target
 ExecStart=$PYTHON_EXEC $BASE_DIR/satellite_fetcher.py
 WorkingDirectory=$BASE_DIR
 Restart=always
-User=meteo
-Group=meteo
+User=$REAL_USER
+Group=$REAL_USER
 
 [Install]
 WantedBy=multi-user.target
@@ -204,7 +208,7 @@ ExecStart=$GUNICORN_EXEC --workers 2 --bind unix:/run/station-meteo/station-mete
 WorkingDirectory=$BASE_DIR
 RuntimeDirectory=station-meteo
 Restart=always
-User=meteo
+User=$REAL_USER
 Group=www-data
 
 [Install]
