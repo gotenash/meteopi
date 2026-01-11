@@ -57,8 +57,8 @@ This project incorporates existing designs from Thingiverse for the mechanical c
 
 1.  **Clone the repository**:
     ```bash
-    git clone https://github.com/yourusername/weather-station.git
-    cd weather-station
+    git clone https://github.com/gotenash/meteopi.git
+    cd meteopi
     ```
 
 2.  **Install Python dependencies**:
