@@ -61,6 +61,21 @@
             border-radius: 4px;
             opacity: 0.85;
         }
+        .bar-fill-rain {
+            position: absolute;
+            height: 100%;
+            background: linear-gradient(90deg, #85c1e9, #2e86c1);
+            border-radius: 4px;
+            opacity: 0.85;
+            left: 0;
+        }
+        .bar-fill-pressure {
+            position: absolute;
+            height: 100%;
+            background: linear-gradient(90deg, #9b59b6, #8e44ad);
+            border-radius: 4px;
+            opacity: 0.85;
+        }
         
         /* Style résumé météo */
         .weather-main {
@@ -104,9 +119,35 @@
                     </div>
                 </div>
 
-                <div class="weather-secondary">
-                    <div>💨 {{ wind }} km/h ({{ wind_dir }})</div>
-                    <div>🌧️ {{ rain }} mm (24h)</div>
+                <div class="weather-secondary" style="flex-direction: column; align-items: center; padding-top: 15px;">
+                    <!-- Jauge de Vent SVG -->
+                    <div style="position: relative; width: 200px; height: 110px;">
+                        <svg viewBox="0 0 200 110" style="width: 100%; height: 100%;">
+                            <!-- Fond de la jauge (gris) -->
+                            <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="#f0f0f0" stroke-width="18" stroke-linecap="round"/>
+                            
+                            <!-- Barre de valeur (colorée et animée) -->
+                            <!-- Longueur de l'arc = PI * 80 ≈ 251.3 -->
+                            <path id="gauge-path" d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="#2ecc71" stroke-width="18" stroke-linecap="round" 
+                                  stroke-dasharray="251.3" stroke-dashoffset="251.3" 
+                                  style="transition: stroke-dashoffset 1s ease-out, stroke 0.5s;"/>
+                            
+                            <!-- Valeur textuelle -->
+                            <text x="100" y="75" text-anchor="middle" font-size="32" font-weight="bold" fill="#333" id="live_wind">--</text>
+                            <text x="100" y="95" text-anchor="middle" font-size="14" fill="#888">km/h</text>
+                        </svg>
+                    </div>
+                    
+                    <!-- Direction et Moyenne -->
+                    <div style="text-align: center; margin-top: -10px;">
+                        <span style="font-weight: bold; font-size: 1.1em;" id="live_dir">--</span>
+                        <span style="color: #666; font-size: 0.9em; margin-left: 5px;">(Moy. {{ wind }})</span>
+                    </div>
+
+                    <!-- Séparateur et Pluie -->
+                    <div style="width: 100%; border-top: 1px solid #eee; margin-top: 10px; padding-top: 8px; text-align: center; color: #555;">
+                        🌧️ {{ rain }} mm (24h)
+                    </div>
                 </div>
 
                 <div style="margin-top: 15px; font-size: 0.85em; color: #777; display: flex; justify-content: space-between;">
@@ -117,12 +158,27 @@
                 </div>
             </div>
 
+            {% if wind_graph %}
+            <div class="card">
+                <div class="graph-container">
+                    <img src="{{ wind_graph }}" alt="Graphique du vent 6h" style="width: 100%; height: auto; border-radius: 4px;">
+                </div>
+            </div>
+            {% endif %}
+
             <div class="card rain-summary">
                 <h3>🌧️ Activité Pluie (24h)</h3>
                 <div style="font-size: 0.9em; line-height: 1.4;">
                     {{ rain_summary | safe }}
                 </div>
             </div>
+
+            {% if wind_summary %}
+            <div class="card">
+                <h3>🌬️ Épisodes Venteux (24h)</h3>
+                <div class="summary-content">{{ wind_summary|safe }}</div>
+            </div>
+            {% endif %}
         </div>
 
         <!-- Colonne Droite : Prévisions et Stats -->
@@ -169,6 +225,88 @@
                     <p>Pas de données statistiques disponibles.</p>
                 {% endif %}
             </div>
+
+            <div class="card stats-container">
+                <h3>💧 Pluviométrie</h3>
+                {% if stats %}
+                    {% set rain_max = rain_scale_max if rain_scale_max > 0 else 1 %}
+                    {% for key in ['day', 'day_1', 'day_2', 'week', 'month'] %}
+                        {% if stats[key] %}
+                            {% set s = stats[key] %}
+                            {% set width_pct = (s.rain_total / rain_max) * 100 %}
+                            
+                            <div class="temp-bar-row">
+                                <div class="temp-label">
+                                    <a href="{{ url_for('rain_detail', period=key) }}" style="color: inherit; text-decoration: none; border-bottom: 1px dotted #777;" title="Voir le détail">{{ s.label }}</a>
+                                </div>
+                                <div class="bar-track">
+                                    <div class="bar-fill-rain" style="width: {{ width_pct }}%;"></div>
+                                </div>
+                                <div class="temp-val" style="width: 60px; text-align: right;">{{ '%.1f'|format(s.rain_total) }}mm</div>
+                            </div>
+                        {% endif %}
+                    {% endfor %}
+                {% else %}
+                    <p>Pas de données disponibles.</p>
+                {% endif %}
+            </div>
+
+            <div class="card stats-container">
+                <h3>📉 Pression Atmosphérique</h3>
+                {% if stats %}
+                    {% set p_range = press_scale_max - press_scale_min %}
+                    {% if p_range == 0 %}{% set p_range = 1 %}{% endif %}
+                    
+                    {% for key in ['day', 'day_1', 'day_2', 'week', 'month'] %}
+                        {% if stats[key] and stats[key].has_press %}
+                            {% set s = stats[key] %}
+                            {% set left_pct = ((s.press_min - press_scale_min) / p_range) * 100 %}
+                            {% set width_pct = ((s.press_max - s.press_min) / p_range) * 100 %}
+                            
+                            <div class="temp-bar-row">
+                                <div class="temp-label">{{ s.label }}</div>
+                                <div class="temp-val" style="width: 50px;">{{ '%.0f'|format(s.press_min) }}</div>
+                                <div class="bar-track">
+                                    <div class="bar-fill-pressure" style="left: {{ left_pct }}%; width: {{ width_pct }}%;"></div>
+                                </div>
+                                <div class="temp-val" style="width: 50px;">{{ '%.0f'|format(s.press_max) }}</div>
+                            </div>
+                        {% endif %}
+                    {% endfor %}
+                {% else %}
+                    <p>Pas de données disponibles.</p>
+                {% endif %}
+            </div>
         </div>
     </div>
+
+    <script>
+        // Script de mise à jour du vent en temps réel (toutes les 2 secondes)
+        setInterval(function() {
+            fetch("{{ url_for('api_live_wind') }}")
+                .then(response => response.json())
+                .then(data => {
+                    if (!data.error) {
+                        const speed = data.wind_speed;
+                        document.getElementById("live_wind").textContent = speed.toFixed(1);
+                        document.getElementById("live_dir").innerText = data.wind_dir;
+                        
+                        // --- Animation de la jauge ---
+                        const maxSpeed = 100; // Echelle max de la jauge (100 km/h)
+                        const arcLength = 251.3; // Longueur totale de l'arc
+                        // Calcul de l'offset (plus la valeur est grande, plus l'offset est petit)
+                        const offset = arcLength - (Math.min(speed, maxSpeed) / maxSpeed) * arcLength;
+                        
+                        const gaugePath = document.getElementById("gauge-path");
+                        gaugePath.style.strokeDashoffset = offset;
+
+                        // Changement dynamique de couleur
+                        if (speed < 20) gaugePath.style.stroke = "#2ecc71";      // Vert (Calme)
+                        else if (speed < 50) gaugePath.style.stroke = "#f1c40f"; // Jaune/Orange (Venté)
+                        else gaugePath.style.stroke = "#e74c3c";                 // Rouge (Tempête)
+                    }
+                })
+                .catch(e => console.error("Erreur maj vent:", e));
+        }, 2000);
+    </script>
 {% endblock %}

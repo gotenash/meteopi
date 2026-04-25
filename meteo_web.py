@@ -20,6 +20,7 @@ import numpy as np # Ajout de numpy pour les calculs
 from werkzeug.security import generate_password_hash, check_password_hash
 import requests # Ajout pour les requêtes API externes
 import json # Ajout pour gérer le fichier de configuration
+from PIL import Image # Pour la génération du fond de carte
 
 # On désactive l'affichage de Matplotlib sur le serveur
 plt.switch_backend('Agg')
@@ -79,7 +80,9 @@ def load_config():
         default_config = {
             "owm_api_key": "METTRE_VOTRE_CLE_ICI",
             "latitude": 48.85, # Paris par défaut
-            "longitude": 2.35
+            "longitude": 2.35,
+            "telegram_bot_token": "METTRE_VOTRE_TOKEN_ICI",
+            "telegram_chat_id": ""
         }
         save_config(default_config)
         return default_config
@@ -88,6 +91,69 @@ def save_config(config_data):
     """Sauvegarde la configuration dans config.json."""
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config_data, f, indent=4)
+
+def read_and_process_csv(filepath):
+    """
+    Lit le fichier CSV, en gérant les anciens (7 colonnes) et nouveaux (8 colonnes) formats,
+    et retourne un DataFrame nettoyé.
+    """
+    try:
+        # Lire avec un nombre de colonnes flexible et sans en-tête, en traitant tous les champs comme du texte au départ
+        df_raw = pd.read_csv(filepath, header=None, on_bad_lines='warn', engine='python', dtype=str, names=range(8))
+        
+        if df_raw.empty:
+            return pd.DataFrame(columns=["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_gust", "wind_dir_str"])
+
+        # Vérifier et supprimer la ligne d'en-tête si elle existe
+        if df_raw.iloc[0, 0] == 'time':
+            df_raw = df_raw.iloc[1:]
+
+        # Réinitialiser l'index après une suppression potentielle de l'en-tête
+        df_raw.reset_index(drop=True, inplace=True)
+
+        # Identifier les anciennes lignes (8ème colonne est nulle/NaN) par rapport aux nouvelles
+        # La 8ème colonne a l'index 7
+        is_old_format = df_raw[7].isnull()
+        
+        # Créer le DataFrame final avec les bonnes colonnes
+        df = pd.DataFrame()
+        df['time'] = df_raw[0]
+        df['temp'] = df_raw[1]
+        df['hum'] = df_raw[2]
+        df['pressure'] = df_raw[3]
+        df['rain'] = df_raw[4]
+        df['wind_speed'] = df_raw[5]
+
+        # Pour les anciennes lignes, wind_gust est NaN et wind_dir est dans la colonne 6
+        df.loc[is_old_format, 'wind_gust'] = np.nan
+        df.loc[is_old_format, 'wind_dir_str'] = df_raw.loc[is_old_format, 6]
+
+        # Pour les nouvelles lignes, wind_gust est dans la colonne 6 et wind_dir est dans la colonne 7
+        is_new_format = ~is_old_format
+        df.loc[is_new_format, 'wind_gust'] = df_raw.loc[is_new_format, 6]
+        df.loc[is_new_format, 'wind_dir_str'] = df_raw.loc[is_new_format, 7]
+        
+        # --- CORRECTION AUTO : Rafales mal placées dans la direction ---
+        # On détecte si la colonne 'wind_dir_str' contient des nombres (ex: "12.5") au lieu de texte ("N", "NE")
+        # et si la colonne 'wind_gust' est vide pour ces lignes.
+        dir_as_num = pd.to_numeric(df['wind_dir_str'], errors='coerce')
+        
+        # Masque : La direction est un nombre ET la rafale est vide
+        misplaced_mask = dir_as_num.notna() & df['wind_gust'].isna()
+        
+        if misplaced_mask.any():
+            # On déplace la valeur numérique dans la bonne colonne (Rafale)
+            df.loc[misplaced_mask, 'wind_gust'] = dir_as_num[misplaced_mask]
+            # On marque la direction comme inconnue car elle était absente
+            df.loc[misplaced_mask, 'wind_dir_str'] = "N/A"
+
+        return df
+
+    except (FileNotFoundError, pd.errors.EmptyDataError):
+        return pd.DataFrame(columns=["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_gust", "wind_dir_str"])
+    except Exception as e:
+        print(f"Erreur lors du traitement du fichier CSV : {e}")
+        return pd.DataFrame(columns=["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_gust", "wind_dir_str"])
 
 # --- Chargement de la configuration au démarrage ---
 config = load_config()
@@ -124,10 +190,13 @@ class User(UserMixin):
         return check_password_hash(self.password_hash, password)
 
 CSV_FILE = "meteo_log.csv"
+WIND_CSV_FILE = "wind_detail_log.csv" # Fichier pour le vent en temps réel
 PLUVIOMETER_EVENT_LOG = "pluviometer_events.log" # Chemin vers le fichier de log des événements du pluviomètre
 # Calibration du pluviomètre (identique à meteo_capteur.py) - 2024-05-26 (expérimentale)
 # Basé sur le test : 100ml d'eau (10mm) pour 53 basculements.
 MM_PER_TIP = 0.213 # Correction pour correspondre au capteur
+
+WINDY_THRESHOLD_KMH = 25.0 # Seuil en km/h pour considérer un épisode comme "venteux"
 
 # --- Base de données utilisateur ---
 # On récupère le hash depuis la config pour la persistance, sinon défaut "password"
@@ -274,6 +343,46 @@ def generate_wind_rose_base64(df):
 
     return _save_graph_to_base64(fig)
 
+def generate_wind_speed_graph_48h_base64(df):
+    """Génère un graphique de vitesse du vent sur 48h."""
+    df_wind = df.dropna(subset=['wind_speed', 'time']).copy()
+    
+    # Filtrer les données des dernières 48 heures
+    forty_eight_hours_ago = datetime.now() - timedelta(hours=48)
+    df_wind = df_wind[df_wind['time'] > forty_eight_hours_ago]
+
+    if len(df_wind) < 2:
+        return None
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Tracé de la vitesse moyenne (remplissage)
+    ax.plot(df_wind['time'], df_wind['wind_speed'], color='deepskyblue', label='Vent moyen', alpha=0.7)
+    ax.fill_between(df_wind['time'], df_wind['wind_speed'], color='deepskyblue', alpha=0.2)
+
+    # Tracé des rafales (points et ligne fine)
+    if 'wind_gust' in df_wind.columns:
+        ax.plot(df_wind['time'], df_wind['wind_gust'], color='orange', linestyle='None', marker='o', markersize=3, label='Rafales (pics 2s)')
+
+    # Ajout de la rafale max
+    max_speed = df_wind['wind_gust'].max() if 'wind_gust' in df_wind.columns else df_wind['wind_speed'].max()
+    if pd.notna(max_speed):
+        ax.axhline(y=max_speed, color='red', linestyle='--', alpha=0.5, label=f'Record période: {max_speed:.1f} km/h')
+
+    ax.set_xlabel("Heure")
+    ax.set_ylabel("Vitesse (km/h)")
+    ax.set_title("Vitesse du Vent (48 dernières heures)")
+    ax.legend()
+    ax.grid(True, linestyle='--', alpha=0.7)
+    
+    # Formatage de l'axe X
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %Hh'))
+    ax.xaxis.set_major_locator(mdates.HourLocator(interval=6))
+    plt.xticks(rotation=45, ha="right")
+    fig.tight_layout()
+
+    return _save_graph_to_base64(fig)
+
 def generate_pressure_graph_base64(df):
     """Génère un graphique de pression sur 48h avec tendance."""
     df_pressure = df.dropna(subset=['pressure', 'time']).copy()
@@ -376,18 +485,59 @@ def generate_stats_graph_base64(stats):
     fig.tight_layout()
     return _save_graph_to_base64(fig)
 
-def get_rain_summary(df):
-    """Analyse les données de pluie des dernières 24h et génère un résumé textuel."""
+def generate_wind_graph_base64(df):
+    """Génère un graphique de la vitesse du vent sur les 6 dernières heures."""
+    df_wind = df.dropna(subset=['wind_speed', 'time']).copy()
+    
+    # Filtrer les données des dernières 6 heures
+    six_hours_ago = datetime.now() - timedelta(hours=6)
+    df_wind = df_wind[df_wind['time'] > six_hours_ago]
+
+    if df_wind.empty:
+        return None
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    
+    # Tracé de la vitesse
+    ax.plot(df_wind['time'], df_wind['wind_speed'], color='tab:blue', linewidth=2, label='Moyenne')
+    ax.fill_between(df_wind['time'], df_wind['wind_speed'], color='tab:blue', alpha=0.2)
+
+    # Tracé des rafales si disponibles
+    if 'wind_gust' in df_wind.columns:
+        ax.plot(df_wind['time'], df_wind['wind_gust'], color='orange', linestyle='None', marker='.', markersize=3, label='Rafales')
+
+    ax.set_ylabel("Vitesse (km/h)")
+    ax.set_title("Vent (6 dernières heures)")
+    ax.legend()
+    ax.grid(True, linestyle='--', alpha=0.6)
+    
+    # Formatage de l'axe X
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+    plt.xticks(rotation=0, ha="center")
+    
+    fig.tight_layout()
+
+    return _save_graph_to_base64(fig)
+
+def get_rain_summary(df, start_time=None, end_time=None):
+    """Analyse les données de pluie et génère un résumé textuel."""
     if df.empty:
         return "Données de pluie non disponibles."
 
     now = datetime.now()
-    # Filtrer les données des dernières 24 heures
-    df_24h = df[df['time'] > (now - timedelta(hours=24))].copy()
-    rain_events = df_24h[df_24h['rain'] > 0]
+    if start_time is None:
+        start_time = now - timedelta(hours=24)
+    
+    # Filtrer les données selon la période demandée
+    mask = df['time'] > start_time
+    if end_time:
+        mask = mask & (df['time'] <= end_time)
+        
+    df_period = df[mask].copy()
+    rain_events = df_period[df_period['rain'] > 0].copy()
 
     if rain_events.empty:
-        return "Pas de pluie détectée dans les dernières 24 heures."
+        return "Pas de pluie détectée sur cette période."
 
     # Ajout d'une colonne 'date' pour pouvoir regrouper par jour
     rain_events['date'] = rain_events['time'].dt.date
@@ -401,22 +551,27 @@ def get_rain_summary(df):
         daily_group['time_diff'] = daily_group['time'].diff()
         episode_id = (daily_group['time_diff'] > timedelta(minutes=30)).cumsum()
 
-        day_str = "Aujourd'hui" if date == now.date() else f"Hier ({date.strftime('%d/%m')})"
+        if date == now.date():
+            day_str = "Aujourd'hui"
+        elif date == (now - timedelta(days=1)).date():
+            day_str = f"Hier ({date.strftime('%d/%m')})"
+        else:
+            day_str = f"Le {date.strftime('%d/%m')}"
         
         episode_summaries = []
         for _, episode in daily_group.groupby(episode_id):
-            start_time = episode['time'].min()
-            end_time = episode['time'].max()
+            ep_start = episode['time'].min()
+            ep_end = episode['time'].max()
             total_rain = episode['rain'].sum()
 
             if len(episode) == 1:
-                episode_summaries.append(f"Averse de {total_rain:.2f} mm vers {start_time.strftime('%Hh%M')}")
+                episode_summaries.append(f"Averse de {total_rain:.2f} mm vers {ep_start.strftime('%Hh%M')}")
             else:
-                duration = (end_time - start_time).total_seconds() / 60
+                duration = (ep_end - ep_start).total_seconds() / 60
                 if duration > 5:
-                    episode_summaries.append(f"{total_rain:.2f} mm entre {start_time.strftime('%Hh%M')} et {end_time.strftime('%Hh%M')}")
+                    episode_summaries.append(f"{total_rain:.2f} mm entre {ep_start.strftime('%Hh%M')} et {ep_end.strftime('%Hh%M')}")
                 else:
-                    episode_summaries.append(f"{total_rain:.2f} mm autour de {start_time.strftime('%Hh%M')}")
+                    episode_summaries.append(f"{total_rain:.2f} mm autour de {ep_start.strftime('%Hh%M')}")
         
         # On assemble le résumé pour la journée
         if episode_summaries:
@@ -459,6 +614,84 @@ def get_temp_hum_summary(df):
 
     # --- Construction de la phrase ---
     return f"Tendance sur 3h : Température {temp_trend}."
+
+def get_wind_summary(df, start_time=None, end_time=None):
+    """Analyse les données de vent et génère un résumé textuel des épisodes venteux."""
+    if df.empty or 'wind_speed' not in df.columns:
+        return "Données de vent non disponibles."
+
+    now = datetime.now()
+    if start_time is None:
+        start_time = now - timedelta(hours=24)
+    
+    # Filtrer les données selon la période demandée
+    mask = df['time'] > start_time
+    if end_time:
+        mask = mask & (df['time'] <= end_time)
+        
+    df_period = df[mask].copy()
+    
+    # On ne garde que les rafales significatives
+    wind_events = df_period[df_period['wind_speed'] >= WINDY_THRESHOLD_KMH].copy()
+
+    if wind_events.empty:
+        max_wind_today = df_period['wind_speed'].max()
+        if pd.notna(max_wind_today):
+             return f"Pas de vent fort aujourd'hui. Rafale max : {max_wind_today:.1f} km/h."
+        return "Pas de vent fort détecté sur cette période."
+
+    # Ajout d'une colonne 'date' pour pouvoir regrouper par jour
+    wind_events['date'] = wind_events['time'].dt.date
+
+    # On regroupe d'abord par jour
+    daily_summaries = []
+    for date, daily_group in wind_events.groupby('date'):
+        
+        # On identifie les épisodes de vent au sein de la journée
+        daily_group = daily_group.copy() # Pour éviter les avertissements pandas
+        # Un nouvel épisode commence si deux rafales sont espacées de plus de 30 minutes
+        daily_group['time_diff'] = daily_group['time'].diff()
+        episode_id = (daily_group['time_diff'] > timedelta(minutes=30)).cumsum()
+
+        day_str = "Aujourd'hui" if date == now.date() else f"Le {date.strftime('%d/%m')}"
+        
+        episode_summaries = []
+        for _, episode in daily_group.groupby(episode_id):
+            peak_wind_speed = episode['wind_speed'].max()
+            peak_event = episode.loc[episode['wind_speed'].idxmax()]
+            peak_wind_time = peak_event['time']
+            peak_wind_dir = peak_event['wind_dir_str'] if pd.notna(peak_event['wind_dir_str']) else ""
+
+            episode_summaries.append(f"Rafale à {peak_wind_speed:.1f} km/h ({peak_wind_dir}) vers {peak_wind_time.strftime('%Hh%M')}")
+        
+        if episode_summaries:
+            daily_summaries.append(f"<strong>{day_str}:</strong><br>" + "<br>".join(reversed(episode_summaries)))
+    
+    return "<br><br>".join(reversed(daily_summaries)) if daily_summaries else "Pas de vent fort détecté sur cette période."
+
+def send_telegram_message(token, chat_id, message):
+    """Envoie un message à un chat Telegram et retourne un statut."""
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        'chat_id': chat_id,
+        'text': message,
+        'parse_mode': 'Markdown'
+    }
+    try:
+        response = requests.post(url, data=payload, timeout=10)
+        if response.status_code == 200:
+            return True, "Message de test envoyé avec succès."
+        else:
+            error_text = response.text
+            try:
+                error_json = response.json()
+                if 'description' in error_json:
+                    error_text = error_json['description']
+            except json.JSONDecodeError:
+                pass # Garder le texte brut si ce n'est pas du JSON
+            return False, f"Erreur {response.status_code}: {error_text}"
+    except requests.RequestException as e:
+        return False, f"Erreur de connexion à l'API Telegram: {e}"
 
 def latlon_to_tile_coords(lat, lon, zoom):
     """Convertit des coordonnées GPS en coordonnées de tuile OpenStreetMap."""
@@ -554,17 +787,30 @@ def get_temp_gradient(min_t, max_t):
     
     return f"linear-gradient(90deg, {', '.join(gradient_parts)})"
 
+def read_log_tail(filename, num_lines=30):
+    """Lit les dernières lignes d'un fichier de log."""
+    if not os.path.exists(filename):
+        return f"Fichier non trouvé : {filename} (Vérifiez le dossier logs/)"
+    try:
+        with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
+            # On lit tout le fichier (supposé de taille raisonnable pour des logs rotatifs)
+            lines = f.readlines()
+            return "".join(lines[-num_lines:])
+    except Exception as e:
+        return f"Erreur de lecture : {e}"
+
 @app.route("/")
 @login_required
 def home():
     # Initialisation des variables
-    temp, hum, pressure, rain, wind, wind_dir, last_update, prediction, rain_summary, temp_hum_summary = "N/A", "N/A", "N/A", "N/A", "N/A", "", "inconnue", None, "Analyse en cours...", None
+    temp, hum, pressure, rain, wind, wind_dir, last_update, prediction, rain_summary, temp_hum_summary, wind_summary, wind_graph = "N/A", "N/A", "N/A", "N/A", "N/A", "", "inconnue", None, "Analyse en cours...", None, "Analyse en cours...", None
     stats = {}
     scale_min, scale_max = 100, -100 # Valeurs initiales pour déterminer l'échelle des barres
+    rain_scale_max = 0 # Valeur max pour l'échelle de pluie
+    press_scale_min, press_scale_max = 2000, 0 # Valeurs initiales pour l'échelle de pression
 
     try:
-        # On lit le CSV en spécifiant les 7 colonnes écrites par le capteur
-        df = pd.read_csv(CSV_FILE, header=0, names=["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_dir_str"], on_bad_lines='skip')
+        df = read_and_process_csv(CSV_FILE)
         if not df.empty:
             # Conversion des types, en gérant les erreurs
             df['time'] = pd.to_datetime(df['time'], errors='coerce')
@@ -573,14 +819,15 @@ def home():
             df['hum'] = pd.to_numeric(df['hum'], errors='coerce')
             df['rain'] = pd.to_numeric(df['rain'], errors='coerce')
             df['wind_speed'] = pd.to_numeric(df['wind_speed'], errors='coerce')
+            df['wind_gust'] = pd.to_numeric(df['wind_gust'], errors='coerce')
             df.dropna(subset=['time'], inplace=True) # On supprime les lignes où la date est invalide
 
             last_reading = df.iloc[-1]
-            temp = f"{last_reading['temp']:.1f}"  # Formatte avec une décimale
-            hum = f"{last_reading['hum']:.0f}"    # Formatte en entier
+            temp = f"{last_reading['temp']:.1f}"
             wind = f"{last_reading['wind_speed']:.1f}"
             wind_dir = last_reading['wind_dir_str'] if pd.notna(last_reading['wind_dir_str']) else ""
             pressure = f"{last_reading['pressure']:.1f}" if pd.notna(last_reading['pressure']) else "N/A"
+            hum = f"{last_reading['hum']:.0f}"
             
             # Calcul du cumul de pluie sur les dernières 24h
             last_24h = df[df['time'] > (datetime.now() - timedelta(hours=24))]
@@ -602,6 +849,15 @@ def home():
                     p_min = df_period['temp'].min()
                     p_max = df_period['temp'].max()
                     
+                    # Calculs Pression
+                    press_min = df_period['pressure'].min()
+                    press_max = df_period['pressure'].max()
+                    has_press = not pd.isna(press_min)
+                    
+                    if has_press:
+                        if press_min < press_scale_min: press_scale_min = press_min
+                        if press_max > press_scale_max: press_scale_max = press_max
+
                     # Détermination de l'icône météo
                     rain_sum = df_period['rain'].sum()
                     press_mean = df_period['pressure'].mean()
@@ -620,12 +876,16 @@ def home():
                         'max_str': f"{p_max:.1f}",
                         'icon': icon,
                         'rain_total': rain_sum,
+                        'press_min': press_min if has_press else 0,
+                        'press_max': press_max if has_press else 0,
+                        'has_press': has_press,
                         'date_iso': now.strftime('%Y-%m-%d') if key == 'day' else None,
                         'gradient': get_temp_gradient(p_min, p_max)
                     }
                     # Mise à jour de l'échelle globale
                     if p_min < scale_min: scale_min = p_min
                     if p_max > scale_max: scale_max = p_max
+                    if rain_sum > rain_scale_max: rain_scale_max = rain_sum
 
             # --- Ajout des 5 derniers jours ---
             days_fr = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
@@ -640,6 +900,15 @@ def home():
                     p_min = df_day['temp'].min()
                     p_max = df_day['temp'].max()
                     
+                    # Calculs Pression
+                    press_min = df_day['pressure'].min()
+                    press_max = df_day['pressure'].max()
+                    has_press = not pd.isna(press_min)
+                    
+                    if has_press:
+                        if press_min < press_scale_min: press_scale_min = press_min
+                        if press_max > press_scale_max: press_scale_max = press_max
+
                     # Détermination de l'icône météo
                     rain_sum = df_day['rain'].sum()
                     press_mean = df_day['pressure'].mean()
@@ -658,18 +927,31 @@ def home():
                         'max_str': f"{p_max:.1f}",
                         'icon': icon,
                         'rain_total': rain_sum,
+                        'press_min': press_min if has_press else 0,
+                        'press_max': press_max if has_press else 0,
+                        'has_press': has_press,
                         'date_iso': d.strftime('%Y-%m-%d'),
                         'gradient': get_temp_gradient(p_min, p_max)
                     }
                     if p_min < scale_min: scale_min = p_min
                     if p_max > scale_max: scale_max = p_max
+                    if rain_sum > rain_scale_max: rain_scale_max = rain_sum
 
             # Ajout d'une petite marge pour l'affichage graphique
             if scale_min != 100: scale_min -= 2
             if scale_max != -100: scale_max += 2
             
+            # Marges pour la pression
+            if press_scale_min == 2000: press_scale_min = 980 # Valeur par défaut si pas de données
+            if press_scale_max == 0: press_scale_max = 1040
+            press_scale_min -= 2
+            press_scale_max += 2
+            
             # Génération de la prédiction (uniquement si des données de pression existent)
             prediction = get_weather_prediction(df)
+            
+            # Génération du graphique de vent (6h)
+            wind_graph = generate_wind_graph_base64(df)
 
             last_update = last_reading['time'].strftime("%d/%m/%Y à %H:%M:%S")
 
@@ -680,8 +962,9 @@ def home():
     # On déplace les appels aux fonctions d'analyse ici pour plus de clarté
     rain_summary = get_rain_summary(df) if 'df' in locals() and not df.empty else "Données non disponibles."
     temp_hum_summary = get_temp_hum_summary(df) if 'df' in locals() and not df.empty else None
+    wind_summary = get_wind_summary(df) if 'df' in locals() and not df.empty else "Données non disponibles."
     
-    return render_template("home.html", temp=temp, hum=hum, pressure=pressure, rain=rain, wind=wind, wind_dir=wind_dir, last_update=last_update, prediction=prediction, stats=stats, scale_min=scale_min, scale_max=scale_max, rain_summary=rain_summary, temp_hum_summary=temp_hum_summary)
+    return render_template("home.html", temp=temp, hum=hum, pressure=pressure, rain=rain, wind=wind, wind_dir=wind_dir, last_update=last_update, prediction=prediction, stats=stats, scale_min=scale_min, scale_max=scale_max, press_scale_min=press_scale_min, press_scale_max=press_scale_max, rain_scale_max=rain_scale_max, rain_summary=rain_summary, temp_hum_summary=temp_hum_summary, wind_summary=wind_summary, wind_graph=wind_graph)
 
 @app.route("/pluviometer_logs")
 @login_required
@@ -737,15 +1020,113 @@ def admin_clear_pluviometer_logs():
     flash("Les logs du pluviomètre ont été effacés.", "success")
     return redirect(url_for('pluviometer_logs_page'))
 
+@app.route('/history/delete', methods=['POST'])
+@login_required
+def delete_history_line():
+    """Supprime une ligne de l'historique basée sur son timestamp."""
+    timestamp = request.form.get('timestamp')
+    if not timestamp:
+        flash("Identifiant de ligne manquant.", "danger")
+        return redirect(url_for('history'))
+    
+    try:
+        lines = []
+        found = False
+        # Lecture du fichier CSV et filtrage de la ligne à supprimer
+        if os.path.exists(CSV_FILE):
+            with open(CSV_FILE, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                header = next(reader, None)
+                if header:
+                    lines.append(header)
+                
+                for row in reader:
+                    if len(row) > 0 and row[0] == timestamp:
+                        found = True
+                        continue # On saute (supprime) cette ligne
+                    lines.append(row)
+            
+            if found:
+                with open(CSV_FILE, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerows(lines)
+                flash(f"Mesure du {timestamp} supprimée avec succès.", "success")
+            else:
+                flash("Ligne introuvable dans le fichier.", "warning")
+        else:
+            flash("Fichier de données introuvable.", "danger")
+            
+    except Exception as e:
+        flash(f"Erreur lors de la suppression : {e}", "danger")
+        
+    return redirect(url_for('history'))
+
+@app.route('/history/update', methods=['POST'])
+@login_required
+def update_history_line():
+    """Met à jour une ligne de l'historique."""
+    original_time = request.form.get('original_time')
+    
+    if not original_time:
+        flash("Identifiant de ligne manquant.", "danger")
+        return redirect(url_for('history'))
+
+    # Récupération des nouvelles valeurs
+    new_temp = request.form.get('temp')
+    new_hum = request.form.get('hum')
+    new_pressure = request.form.get('pressure')
+    new_rain = request.form.get('rain')
+    new_wind = request.form.get('wind_speed')
+    new_gust = request.form.get('wind_gust')
+    new_wind_dir = request.form.get('wind_dir')
+
+    try:
+        lines = []
+        updated = False
+        if os.path.exists(CSV_FILE):
+            with open(CSV_FILE, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                header = next(reader, None)
+                if header:
+                    lines.append(header)
+                
+                for row in reader:
+                    if len(row) > 0 and row[0] == original_time:
+                        # Mise à jour de la ligne (on conserve l'ordre du CSV)
+                        lines.append([original_time, new_temp, new_hum, new_pressure, new_rain, new_wind, new_gust, new_wind_dir])
+                        updated = True
+                    else:
+                        lines.append(row)
+            
+            if updated:
+                # Écriture atomique via un fichier temporaire pour la sécurité
+                temp_file = CSV_FILE + '.tmp'
+                with open(temp_file, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerows(lines)
+                shutil.move(temp_file, CSV_FILE)
+                flash(f"Mesure du {original_time} mise à jour avec succès.", "success")
+            else:
+                flash("Ligne introuvable pour mise à jour.", "warning")
+    except Exception as e:
+        flash(f"Erreur lors de la mise à jour : {e}", "danger")
+
+    return redirect(url_for('history'))
+
 @app.route('/history')
 @login_required
 def history():
     """Affiche l'historique complet des données avec pagination et filtrage par date."""
     try:
-        df = pd.read_csv(CSV_FILE, header=0, names=["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_dir_str"], on_bad_lines='skip')
+        df = read_and_process_csv(CSV_FILE)
         df.dropna(subset=['time'], inplace=True) # On s'assure que la colonne 'time' n'est pas vide
         df['time'] = pd.to_datetime(df['time'], errors='coerce')
         df.dropna(subset=['time'], inplace=True) # On supprime les lignes où la conversion de date a échoué
+
+        # Conversion des colonnes en numérique pour éviter les erreurs de formatage
+        numeric_cols = ['temp', 'hum', 'pressure', 'rain', 'wind_speed', 'wind_gust']
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
 
         # --- Logique de filtrage par date ---
         start_date_str = request.args.get('start_date', '')
@@ -768,21 +1149,61 @@ def history():
         per_page = 50  # 50 entrées par page
         total_rows = len(df) 
         total_pages = (total_rows + per_page - 1) // per_page
+        
+        if page < 1: page = 1
+        if page > total_pages and total_pages > 0: page = total_pages
 
         start = (page - 1) * per_page
         end = start + per_page
         df_page = df.iloc[start:end].copy() # .copy() pour éviter un avertissement
 
-        # Formater pour l'affichage
-        df_page['time'] = pd.to_datetime(df_page['time']).dt.strftime('%d/%m/%Y %H:%M')
-        df_page = df_page.rename(columns={'time': 'Date/Heure', 'temp': 'Temp (°C)', 'hum': 'Humidité (%)', 'pressure': 'Pression (hPa)', 'rain': 'Pluie (mm)', 'wind_speed': 'Vent (km/h)', 'wind_dir_str': 'Direction'})
-        table_html = df_page.to_html(classes='data-table', index=False, justify='center')
+        # --- Calcul de la pagination intelligente ---
+        # Génère une liste comme [1, None, 49, 50, 51, None, 100] où None deviendra "..."
+        pagination_iter = []
+        if total_pages > 1:
+            if total_pages <= 7:
+                pagination_iter = list(range(1, total_pages + 1))
+            else:
+                pages_set = set()
+                # Toujours afficher la première et la dernière
+                pages_set.add(1)
+                pages_set.add(total_pages)
+                # Afficher autour de la page courante (ex: page-2 à page+2)
+                for p in range(page - 2, page + 3):
+                    if 1 <= p <= total_pages:
+                        pages_set.add(p)
+                
+                sorted_pages = sorted(list(pages_set))
+                
+                prev = None
+                for p in sorted_pages:
+                    if prev is not None:
+                        if p > prev + 1:
+                            pagination_iter.append(None) # Trou détecté
+                    pagination_iter.append(p)
+                    prev = p
+
+        # Préparation des données pour le template (liste de dictionnaires)
+        history_data = []
+        for _, row in df_page.iterrows():
+            history_data.append({
+                'original_time': row['time'].strftime('%Y-%m-%d %H:%M:%S'), # Identifiant unique pour suppression
+                'display_time': row['time'].strftime('%d/%m/%Y %H:%M'),
+                'temp': f"{row['temp']:.1f}" if pd.notna(row['temp']) else "",
+                'hum': f"{row['hum']:.0f}" if pd.notna(row['hum']) else "",
+                'pressure': f"{row['pressure']:.1f}" if pd.notna(row['pressure']) else "",
+                'rain': f"{row['rain']:.3f}" if pd.notna(row['rain']) else "",
+                'wind_speed': f"{row['wind_speed']:.1f}" if pd.notna(row['wind_speed']) else "",
+                'wind_gust': f"{row['wind_gust']:.1f}" if pd.notna(row['wind_gust']) else "",
+                'wind_dir': row['wind_dir_str'] if pd.notna(row['wind_dir_str']) else ""
+            })
 
     except (FileNotFoundError, pd.errors.EmptyDataError):
-        table_html = "<p>Aucune donnée d'historique à afficher.</p>"
+        history_data = []
         page, total_pages, start_date_str, end_date_str = 1, 1, '', ''
+        pagination_iter = []
 
-    return render_template('history.html', table_html=table_html, current_page=page, total_pages=total_pages, start_date=start_date_str, end_date=end_date_str)
+    return render_template('history.html', history_data=history_data, current_page=page, total_pages=total_pages, start_date=start_date_str, end_date=end_date_str, pagination_iter=pagination_iter)
 
 @app.route('/logout')
 @login_required
@@ -794,28 +1215,83 @@ def logout():
 @login_required
 def admin_page():
     """Page d'administration pour les actions sensibles."""
-    return render_template('admin.html', config=config)
+    # --- Récupération des logs ---
+    # Les chemins sont relatifs au dossier d'exécution (défini dans run_all.sh)
+    log_files = {
+        'Capteurs (capteur.log)': 'logs/capteur.log',
+        'Satellite (satellite.log)': 'logs/satellite.log',
+        'Serveur Web (gunicorn.log)': 'logs/gunicorn.log'
+    }
+    
+    logs_data = {}
+    for label, path in log_files.items():
+        logs_data[label] = read_log_tail(path)
+
+    # --- État du système (basé sur la fraîcheur du CSV) ---
+    system_status = {'active': False, 'last_update': 'Inconnu', 'csv_size': '0 Ko'}
+    
+    if os.path.exists(CSV_FILE):
+        try:
+            mtime = os.path.getmtime(CSV_FILE)
+            size = os.path.getsize(CSV_FILE)
+            last_mod = datetime.fromtimestamp(mtime)
+            system_status['last_update'] = last_mod.strftime("%d/%m/%Y %H:%M:%S")
+            system_status['csv_size'] = f"{size / 1024:.1f} Ko"
+            if datetime.now() - last_mod < timedelta(minutes=5):
+                system_status['active'] = True
+        except Exception: pass
+
+    return render_template('admin.html', config=config, logs=logs_data, system_status=system_status)
 
 @app.route('/admin/update_config', methods=['POST'])
 @login_required
 def admin_update_config():
     """Met à jour le fichier de configuration."""
+    # On utilise un bloc try...except pour intercepter les erreurs de conversion (ex: latitude non numérique)
     try:
-        new_config = {
-            "owm_api_key": request.form['owm_api_key'],
-            "latitude": float(request.form['latitude']),
-            "longitude": float(request.form['longitude'])
-        }
-        save_config(new_config)
-        flash("Configuration mise à jour avec succès ! L'application va redémarrer pour appliquer les changements.", "success")
+        # On charge la config existante pour ne pas écraser des clés non présentes dans le formulaire (ex: mot de passe)
+        current_config = load_config()
+        
+        current_config["owm_api_key"] = request.form.get('owm_api_key', '')
+        current_config["latitude"] = float(request.form.get('latitude', 0))
+        current_config["longitude"] = float(request.form.get('longitude', 0))
+        current_config["telegram_bot_token"] = request.form.get('telegram_bot_token', '')
+        current_config["telegram_chat_id"] = request.form.get('telegram_chat_id', '')
+        
+        # Ajout des paramètres Samba
+        current_config["samba_share"] = request.form.get('samba_share', '')
+        current_config["samba_user"] = request.form.get('samba_user', '')
+        current_config["samba_password"] = request.form.get('samba_password', '')
+        
+        save_config(current_config)
+        flash("Configuration mise à jour avec succès ! Les services concernés (satellite, telegram) vont redémarrer.", "success")
+        
         # On recharge la configuration pour la session en cours
         global config, LATITUDE, LONGITUDE, OWM_API_KEY
-        config = new_config
+        config = current_config
         LATITUDE, LONGITUDE, OWM_API_KEY = config['latitude'], config['longitude'], config['owm_api_key']
     except ValueError:
         flash("Erreur : La latitude et la longitude doivent être des nombres.", "danger")
     except Exception as e:
         flash(f"Une erreur est survenue : {e}", "danger")
+    return redirect(url_for('admin_page'))
+
+@app.route('/admin/test_telegram', methods=['POST'])
+@login_required
+def admin_test_telegram():
+    """Envoie un message de test Telegram."""
+    token = config.get("telegram_bot_token")
+    chat_id = config.get("telegram_chat_id")
+
+    if not token or not chat_id:
+        flash("Veuillez d'abord configurer et sauvegarder le Token et le Chat ID.", "warning")
+    else:
+        success, message = send_telegram_message(token, chat_id, "🔔 Ceci est un message de test de votre Station Météo.")
+        if success:
+            flash(message, "success")
+        else:
+            flash(message, "danger")
+
     return redirect(url_for('admin_page'))
 
 @app.route('/admin/change_password', methods=['POST'])
@@ -851,12 +1327,227 @@ def admin_change_password():
 def download():
     return send_file(CSV_FILE, as_attachment=True)
 
+@app.route("/download_wind_detail")
+@login_required
+def download_wind_detail():
+    """Permet de télécharger le fichier de logs détaillés du vent."""
+    if not os.path.exists(WIND_CSV_FILE):
+        flash("Le fichier de logs détaillés n'existe pas encore.", "warning")
+        return redirect(url_for('admin_page'))
+    return send_file(WIND_CSV_FILE, as_attachment=True)
+
+@app.route("/download_config")
+@login_required
+def download_config():
+    return send_file(CONFIG_FILE, as_attachment=True)
+
+@app.route('/admin/upload_csv', methods=['POST'])
+@login_required
+def admin_upload_csv():
+    """Restaure un fichier CSV de sauvegarde."""
+    if 'file' not in request.files:
+        flash('Aucun fichier sélectionné.', 'danger')
+        return redirect(url_for('admin_page'))
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        flash('Aucun fichier sélectionné.', 'danger')
+        return redirect(url_for('admin_page'))
+    
+    if file and file.filename.endswith('.csv'):
+        try:
+            # Sauvegarde de sécurité du fichier actuel avant écrasement
+            if os.path.exists(CSV_FILE):
+                shutil.copy(CSV_FILE, CSV_FILE + ".bak")
+            
+            file.save(CSV_FILE)
+            flash('Données restaurées avec succès. Une sauvegarde de l\'ancien fichier a été créée (.bak).', 'success')
+        except Exception as e:
+            flash(f"Erreur lors de la restauration : {e}", "danger")
+    else:
+        flash('Format invalide. Veuillez fournir un fichier .csv.', 'danger')
+        
+    return redirect(url_for('admin_page'))
+
+@app.route('/admin/upload_config', methods=['POST'])
+@login_required
+def admin_upload_config():
+    """Restaure un fichier de configuration JSON."""
+    if 'file' not in request.files:
+        flash('Aucun fichier sélectionné.', 'danger')
+        return redirect(url_for('admin_page'))
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        flash('Aucun fichier sélectionné.', 'danger')
+        return redirect(url_for('admin_page'))
+    
+    if file and file.filename.endswith('.json'):
+        try:
+            # On lit le contenu pour vérifier que c'est un JSON valide
+            file_content = file.read()
+            json.loads(file_content) # Lève une exception si invalide
+
+            # Sauvegarde de sécurité du fichier actuel
+            if os.path.exists(CONFIG_FILE):
+                shutil.copy(CONFIG_FILE, CONFIG_FILE + ".bak")
+            
+            # On écrit le nouveau contenu
+            with open(CONFIG_FILE, 'wb') as f:
+                f.write(file_content)
+            
+            # Mise à jour de la configuration en mémoire
+            global config, LATITUDE, LONGITUDE, OWM_API_KEY
+            config = load_config()
+            LATITUDE = config.get("latitude")
+            LONGITUDE = config.get("longitude")
+            OWM_API_KEY = config.get("owm_api_key")
+            
+            flash('Configuration restaurée avec succès. Une sauvegarde (.bak) a été créée.', 'success')
+        except json.JSONDecodeError:
+            flash("Le fichier fourni n'est pas un JSON valide.", "danger")
+        except Exception as e:
+            flash(f"Erreur lors de la restauration : {e}", "danger")
+    else:
+        flash('Format invalide. Veuillez fournir un fichier .json.', 'danger')
+        
+    return redirect(url_for('admin_page'))
+
+@app.route('/admin/upload_overlay', methods=['POST'])
+@login_required
+def admin_upload_overlay():
+    """Permet d'uploader une image de calque (frontières/carte) pour la vue satellite."""
+    if 'file' not in request.files:
+        flash('Aucun fichier sélectionné.', 'danger')
+        return redirect(url_for('admin_page'))
+    
+    file = request.files['file']
+    if file.filename == '':
+        flash('Aucun fichier sélectionné.', 'danger')
+        return redirect(url_for('admin_page'))
+    
+    # On accepte PNG (transparence)
+    if file:
+        file.save(os.path.join(app.root_path, 'static', 'img', 'map_overlay.png'))
+        flash('Calque de carte (overlay) mis à jour avec succès.', 'success')
+    else:
+        flash("Erreur lors de l'envoi du fichier.", "danger")
+        
+    return redirect(url_for('admin_page'))
+
+@app.route('/admin/generate_overlay', methods=['POST'])
+@login_required
+def admin_generate_overlay():
+    """Génère automatiquement le fond de carte depuis OpenStreetMap."""
+    try:
+        # On utilise le même niveau de zoom que le script satellite (5)
+        zoom = 5
+        grid_size = 3
+        
+        # Calcul des coordonnées de la tuile centrale
+        center_x, center_y = latlon_to_tile_coords(LATITUDE, LONGITUDE, zoom)
+        
+        # Création d'une image vide (RGBA pour la transparence potentielle)
+        full_image = Image.new('RGBA', (256 * grid_size, 256 * grid_size), (0, 0, 0, 0))
+        
+        # User-Agent requis par la politique d'utilisation des tuiles OSM
+        headers = {
+            'User-Agent': 'MeteoPi/1.0 (Raspberry Pi Weather Station)'
+        }
+        
+        # Vérification de l'option noir et blanc
+        to_grayscale = request.form.get('grayscale') == 'true'
+
+        for i in range(grid_size):
+            for j in range(grid_size):
+                # On décalle pour centrer la grille (comme dans satellite_fetcher.py)
+                tile_x = center_x + i - 1
+                tile_y = center_y + j - 1
+                
+                url = f"https://tile.openstreetmap.org/{zoom}/{tile_x}/{tile_y}.png"
+                
+                try:
+                    response = requests.get(url, headers=headers, stream=True, timeout=5)
+                    if response.status_code == 200:
+                        tile_img = Image.open(response.raw).convert("RGBA")
+                        full_image.paste(tile_img, (i * 256, j * 256))
+                except Exception as e:
+                    print(f"Erreur téléchargement tuile OSM {tile_x},{tile_y}: {e}")
+
+        # Conversion en niveaux de gris si demandé
+        if to_grayscale:
+            full_image = full_image.convert("L")
+
+        # Sauvegarde
+        output_path = os.path.join(app.root_path, 'static', 'img', 'map_overlay.png')
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        full_image.save(output_path, format="PNG")
+        
+        flash('Fond de carte OpenStreetMap généré avec succès.', 'success')
+    except Exception as e:
+        flash(f"Erreur lors de la génération : {e}", "danger")
+        
+    return redirect(url_for('admin_page'))
+
+@app.route("/rain_detail")
+@login_required
+def rain_detail():
+    """Affiche le détail des pluies pour une période donnée."""
+    period = request.args.get('period')
+    title = "Détail des pluies"
+    summary = "Période non spécifiée."
+    
+    try:
+        df = read_and_process_csv(CSV_FILE)
+        if not df.empty:
+            df['time'] = pd.to_datetime(df['time'], errors='coerce')
+            df['rain'] = pd.to_numeric(df['rain'], errors='coerce')
+            df.dropna(subset=['time'], inplace=True)
+            
+            now = datetime.now()
+            start_time = None
+            end_time = None
+            
+            if period == 'day':
+                start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                title = "Pluies - Aujourd'hui"
+            elif period == 'week':
+                start_time = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+                title = "Pluies - Cette Semaine"
+            elif period == 'month':
+                start_time = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                title = "Pluies - Ce Mois"
+            elif period and period.startswith('day_'):
+                try:
+                    days_ago = int(period.split('_')[1])
+                    target_date = now - timedelta(days=days_ago)
+                    start_time = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                    end_time = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                    title = f"Pluies - {target_date.strftime('%d/%m')}"
+                except (ValueError, IndexError):
+                    pass
+
+            if start_time:
+                summary = get_rain_summary(df, start_time=start_time, end_time=end_time)
+            else:
+                summary = "Période invalide."
+                
+    except (FileNotFoundError, pd.errors.EmptyDataError):
+        summary = "Aucune donnée disponible."
+    except Exception as e:
+        summary = f"Erreur inattendue lors de l'analyse : {e}"
+        print(f"Erreur dans rain_detail : {e}")
+
+    return render_template("rain_detail.html", title=title, summary=summary)
+
 @app.route("/hourly_graph")
 @login_required
 def hourly_graph():
     graph_html = None
     try:
-        df = pd.read_csv(CSV_FILE, header=0, names=["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_dir_str"], on_bad_lines='skip')
+        df = read_and_process_csv(CSV_FILE)
         if not df.empty:
             df['time'] = pd.to_datetime(df['time'])
             df['temp'] = pd.to_numeric(df['temp'], errors='coerce')
@@ -881,7 +1572,7 @@ def daily_graph():
         start_day = target_date.replace(hour=0, minute=0, second=0)
         end_day = target_date.replace(hour=23, minute=59, second=59)
         
-        df = pd.read_csv(CSV_FILE, header=0, names=["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_dir_str"], on_bad_lines='skip')
+        df = read_and_process_csv(CSV_FILE)
         if not df.empty:
             df['time'] = pd.to_datetime(df['time'], errors='coerce')
             df['temp'] = pd.to_numeric(df['temp'], errors='coerce')
@@ -899,15 +1590,25 @@ def daily_graph():
 @app.route("/wind_rose")
 @login_required
 def wind_rose():
-    """Affiche la rose des vents."""
+    """Affiche la rose des vents, ou un graphique de vitesse si pas de direction."""
     graph_html = None
+    title = "Analyse du Vent"
     try:
-        df = pd.read_csv(CSV_FILE, header=0, names=["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_dir_str"], on_bad_lines='skip')
+        df = read_and_process_csv(CSV_FILE)
         if not df.empty:
-            graph_html = generate_wind_rose_base64(df)
+            df['time'] = pd.to_datetime(df['time'], errors='coerce')
+            
+            # Vérifie si des données de direction valides existent (différentes de 'N/A')
+            valid_directions = df['wind_dir_str'].dropna().unique()
+            if len(valid_directions) == 0 or (len(valid_directions) == 1 and valid_directions[0] == 'N/A'):
+                title = "Graphique de Vitesse du Vent"
+                graph_html = generate_wind_speed_graph_48h_base64(df)
+            else:
+                title = "Rose des Vents"
+                graph_html = generate_wind_rose_base64(df)
     except (FileNotFoundError, pd.errors.EmptyDataError):
         pass
-    return render_template("graph_page.html", title="Rose des Vents", graph_html=graph_html)
+    return render_template("graph_page.html", title=title, graph_html=graph_html)
 
 @app.route("/pressure_graph")
 @login_required
@@ -915,7 +1616,7 @@ def pressure_graph():
     """Affiche le graphique de pression."""
     graph_html = None
     try:
-        df = pd.read_csv(CSV_FILE, header=0, names=["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_dir_str"], on_bad_lines='skip')
+        df = read_and_process_csv(CSV_FILE)
         if not df.empty:
             df['time'] = pd.to_datetime(df['time'], errors='coerce')
             df['pressure'] = pd.to_numeric(df['pressure'], errors='coerce')
@@ -930,7 +1631,7 @@ def rain_graph():
     """Affiche le graphique du cumul de pluie."""
     graph_html = None
     try:
-        df = pd.read_csv(CSV_FILE, header=0, names=["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_dir_str"], on_bad_lines='skip')
+        df = read_and_process_csv(CSV_FILE)
         if not df.empty:
             df['time'] = pd.to_datetime(df['time'], errors='coerce')
             df['rain'] = pd.to_numeric(df['rain'], errors='coerce')
@@ -950,7 +1651,11 @@ def satellite_page():
         files = sorted(os.listdir(archive_dir))
         image_files = [os.path.join(archive_dir, f) for f in files]
 
-    return render_template("satellite.html", image_files=image_files)
+    # Vérifie si un calque de carte existe
+    overlay_path = os.path.join(app.root_path, 'static', 'img', 'map_overlay.png')
+    overlay_exists = os.path.exists(overlay_path)
+
+    return render_template("satellite.html", image_files=image_files, overlay_exists=overlay_exists)
 
 
 def _save_graph_to_base64(fig):
@@ -981,24 +1686,30 @@ def get_last_csv_line(filepath):
 
 @app.route("/api/v1/sensors")
 def api_sensors():
-    """Fournit les dernières données des capteurs au format JSON pour Home Assistant."""
+    """Fournit les dernières données des capteurs au format JSON pour Home Assistant (version optimisée)."""
     try:
         last_reading_list = get_last_csv_line(CSV_FILE)
 
-        # On vérifie qu'on a bien nos 7 colonnes
-        if not last_reading_list or len(last_reading_list) < 7:
-            return jsonify({"error": "No data available"}), 404
+        if not last_reading_list or len(last_reading_list) < 7: # On vérifie qu'on a au moins 7 colonnes
+            return jsonify({"error": "No data available or invalid format"}), 404
 
-        # On recrée un dictionnaire avec les noms des colonnes pour plus de clarté
-        headers = ["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_dir_str"]
+        # Gère l'ancien et le nouveau format
+        if len(last_reading_list) == 8:
+            headers = ["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_gust", "wind_dir_str"]
+        else: # len is 7
+            headers = ["time", "temp", "hum", "pressure", "rain", "wind_speed", "wind_dir_str"]
+        
         last_reading = dict(zip(headers, last_reading_list))
 
         # Conversion des valeurs en types corrects (float, int)
         temp = float(last_reading['temp'])
         hum = float(last_reading['hum'])
-        rain = float(last_reading['rain'])
+        rain_since_last = float(last_reading['rain'])
         wind_speed = float(last_reading['wind_speed'])
-        wind_dir = last_reading.get('wind_dir_str', 'N/A') # On récupère la direction du vent
+        
+        # Utilise .get() pour la nouvelle colonne pour éviter une KeyError sur les anciennes données
+        wind_gust = float(last_reading.get('wind_gust', 0.0)) 
+        wind_dir = last_reading.get('wind_dir_str', 'N/A')
         
         # La pression peut être une chaîne vide si le BME280 n'est pas là
         try:
@@ -1009,10 +1720,11 @@ def api_sensors():
         data = {
             "temperature": round(temp, 1),
             "humidity": round(hum, 1),
-            "rain": round(rain, 4),
             "pressure": round(pressure, 1) if pressure is not None else None,
             "wind_speed": round(wind_speed, 1),
+            "wind_gust": round(wind_gust, 1),
             "wind_direction": wind_dir,
+            "rain": round(rain_since_last, 4),
             # On convertit la date string en objet datetime puis en format ISO
             "last_update": datetime.strptime(last_reading['time'], "%Y-%m-%d %H:%M:%S").isoformat()
         }
@@ -1020,6 +1732,32 @@ def api_sensors():
 
     except (FileNotFoundError, pd.errors.EmptyDataError):
         return jsonify({"error": "Data source not found or empty"}), 404
+    except Exception as e:
+        # En cas de problème, on log l'erreur et on retourne une réponse claire
+        print(f"Erreur dans l'API (version optimisée) : {e}")
+        return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
+
+@app.route("/api/live_wind")
+@login_required
+def api_live_wind():
+    """API légère pour récupérer le vent en temps réel (pour l'affichage JS)."""
+    try:
+        if not os.path.exists(WIND_CSV_FILE):
+             return jsonify({"error": "No data"}), 404
+             
+        last_line = get_last_csv_line(WIND_CSV_FILE)
+        
+        # Validation (time, speed, dir)
+        # On ignore si la ligne est trop courte ou si c'est l'en-tête
+        if not last_line or len(last_line) < 3 or last_line[1] == "wind_speed":
+            return jsonify({"error": "Invalid data"}), 404
+
+        return jsonify({
+            "wind_speed": float(last_line[1]),
+            "wind_dir": last_line[2]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/favicon.ico')
 def favicon():

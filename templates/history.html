@@ -22,22 +22,164 @@
     </form>
 
     <div class="table-container">
-        {{ table_html | safe }}
+        {% if history_data %}
+        <table class="data-table" style="width: 100%; border-collapse: collapse; text-align: center;">
+            <thead>
+                <tr style="background-color: #f2f2f2; border-bottom: 2px solid #ddd;">
+                    <th style="padding: 10px;">Date/Heure</th>
+                    <th style="padding: 10px;">Temp (°C)</th>
+                    <th style="padding: 10px;">Humidité (%)</th>
+                    <th style="padding: 10px;">Pression (hPa)</th>
+                    <th style="padding: 10px;">Pluie (mm)</th>
+                    <th style="padding: 10px;">Vent (km/h)</th>
+                    <th style="padding: 10px;">Rafale (km/h)</th>
+                    <th style="padding: 10px;">Direction</th>
+                    <th style="padding: 10px;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in history_data %}
+                <tr style="border-bottom: 1px solid #eee;">
+                    <td style="padding: 8px;">{{ row.display_time }}</td>
+                    <td>{{ row.temp }}</td>
+                    <td>{{ row.hum }}</td>
+                    <td>{{ row.pressure }}</td>
+                    <td>{{ row.rain }}</td>
+                    <td>{{ row.wind_speed }}</td>
+                    <td>{{ row.wind_gust }}</td>
+                    <td>{{ row.wind_dir }}</td>
+                    <td>
+                        <button type="button" class="btn btn-secondary" style="padding: 4px 8px; font-size: 0.8em; margin-right: 5px; display: inline-block;" 
+                                data-time="{{ row.original_time }}"
+                                data-temp="{{ row.temp }}"
+                                data-hum="{{ row.hum }}"
+                                data-pressure="{{ row.pressure }}"
+                                data-rain="{{ row.rain }}"
+                                data-wind="{{ row.wind_speed }}"
+                                data-gust="{{ row.wind_gust }}"
+                                data-dir="{{ row.wind_dir }}"
+                                onclick="openEditModal(this)">Modifier</button>
+                        <form action="{{ url_for('delete_history_line') }}" method="POST" onsubmit="return confirm('Êtes-vous sûr de vouloir supprimer cette ligne du {{ row.display_time }} ?');" style="margin: 0;">
+                            <input type="hidden" name="timestamp" value="{{ row.original_time }}">
+                            <button type="submit" class="btn btn-danger" style="padding: 4px 8px; font-size: 0.8em; cursor: pointer;">Supprimer</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p>Aucune donnée d'historique à afficher.</p>
+        {% endif %}
     </div>
 
     {# Section de pagination #}
-    <div class="pagination">
-        {# Lien vers la page précédente #}
-        {% if current_page > 1 %}
-            <a href="{{ url_for('history', page=current_page - 1, start_date=start_date, end_date=end_date) }}" class="btn">&laquo; Précédent</a>
-        {% endif %}
+    {% if total_pages > 1 %}
+    <div class="pagination" style="margin-top: 20px; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 5px;">
+        
+        {# Bouton Précédent #}
+        <a href="{{ url_for('history', page=current_page - 1 if current_page > 1 else 1, start_date=start_date, end_date=end_date) }}" 
+           class="btn" {% if current_page <= 1 %}style="pointer-events: none; opacity: 0.5;"{% endif %}>&laquo;</a>
 
-        <span class="page-info">Page {{ current_page }} sur {{ total_pages }}</span>
+        {# Numéros de page #}
+        {% for p in pagination_iter %}
+            {% if p is none %}
+                <span class="ellipsis" style="padding: 0 5px; color: #888;">...</span>
+            {% else %}
+                <a href="{{ url_for('history', page=p, start_date=start_date, end_date=end_date) }}" 
+                   class="btn {% if p == current_page %}active{% endif %}">{{ p }}</a>
+            {% endif %}
+        {% endfor %}
 
-        {# Lien vers la page suivante #}
-        {% if current_page < total_pages %}
-            <a href="{{ url_for('history', page=current_page + 1, start_date=start_date, end_date=end_date) }}" class="btn">Suivant &raquo;</a>
-        {% endif %}
+        {# Bouton Suivant #}
+        <a href="{{ url_for('history', page=current_page + 1 if current_page < total_pages else total_pages, start_date=start_date, end_date=end_date) }}" 
+           class="btn" {% if current_page >= total_pages %}style="pointer-events: none; opacity: 0.5;"{% endif %}>&raquo;</a>
+
+        {# Formulaire "Aller à" #}
+        <form action="{{ url_for('history') }}" method="GET" style="display: inline-flex; align-items: center; margin-left: 15px;">
+            <input type="hidden" name="start_date" value="{{ start_date or '' }}">
+            <input type="hidden" name="end_date" value="{{ end_date or '' }}">
+            <span style="margin-right: 5px; font-size: 0.9em;">Page :</span>
+            <input type="number" name="page" min="1" max="{{ total_pages }}" style="width: 70px; padding: 5px; border: 1px solid #ccc; border-radius: 4px;" placeholder="#">
+            <button type="submit" class="btn" style="padding: 5px 10px; margin-left: 5px;">Go</button>
+        </form>
     </div>
+    {% endif %}
+
+    {# Fenêtre Modale d'édition #}
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeEditModal()">&times;</span>
+            <h3>Modifier la mesure</h3>
+            <p>Corrigez les valeurs ci-dessous :</p>
+            <form action="{{ url_for('update_history_line') }}" method="POST" class="config-form">
+                <input type="hidden" id="edit_original_time" name="original_time">
+                
+                <div class="form-group">
+                    <label>Date/Heure : <strong id="display_time_label"></strong></label>
+                </div>
+                <div class="form-group">
+                    <label for="edit_rain">Pluie (mm)</label>
+                    <input type="number" step="0.001" id="edit_rain" name="rain">
+                </div>
+                <div class="form-group">
+                    <label for="edit_temp">Température (°C)</label>
+                    <input type="number" step="0.1" id="edit_temp" name="temp">
+                </div>
+                <div class="form-group">
+                    <label for="edit_hum">Humidité (%)</label>
+                    <input type="number" step="0.1" id="edit_hum" name="hum">
+                </div>
+                <div class="form-group">
+                    <label for="edit_pressure">Pression (hPa)</label>
+                    <input type="number" step="0.1" id="edit_pressure" name="pressure">
+                </div>
+                <div class="form-group">
+                    <label for="edit_wind_speed">Vent (km/h)</label>
+                    <input type="number" step="0.1" id="edit_wind_speed" name="wind_speed">
+                </div>
+                <div class="form-group">
+                    <label for="edit_wind_gust">Rafale (km/h)</label>
+                    <input type="number" step="0.1" id="edit_wind_gust" name="wind_gust">
+                </div>
+                <div class="form-group">
+                    <label for="edit_wind_dir">Direction</label>
+                    <input type="text" id="edit_wind_dir" name="wind_dir" maxlength="5">
+                </div>
+
+                <div style="text-align: right; margin-top: 15px;">
+                    <button type="button" class="btn btn-danger" onclick="closeEditModal()">Annuler</button>
+                    <button type="submit" class="btn">Enregistrer</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        function openEditModal(btn) {
+            document.getElementById('edit_original_time').value = btn.dataset.time;
+            document.getElementById('display_time_label').textContent = btn.dataset.time;
+            
+            document.getElementById('edit_temp').value = btn.dataset.temp;
+            document.getElementById('edit_hum').value = btn.dataset.hum;
+            document.getElementById('edit_pressure').value = btn.dataset.pressure;
+            document.getElementById('edit_rain').value = btn.dataset.rain;
+            document.getElementById('edit_wind_speed').value = btn.dataset.wind;
+            document.getElementById('edit_wind_gust').value = btn.dataset.gust;
+            document.getElementById('edit_wind_dir').value = btn.dataset.dir;
+            
+            document.getElementById('editModal').style.display = "block";
+        }
+
+        function closeEditModal() {
+            document.getElementById('editModal').style.display = "none";
+        }
+        
+        window.onclick = function(event) {
+            if (event.target == document.getElementById('editModal')) {
+                closeEditModal();
+            }
+        }
+    </script>
 </div>
 {% endblock %}

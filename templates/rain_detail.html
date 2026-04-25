@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>{{ title }}</h2>
+    
+    {% if graph_html %}
+    <div class="graph-container" style="margin-bottom: 20px;">
+        <img src="{{ graph_html }}" alt="Graphique des pluies">
+    </div>
+    {% endif %}
+
+    <div style="text-align: left; margin-top: 20px; font-size: 1.1em; line-height: 1.6;">
+        {{ summary|safe }}
+    </div>
+    <br>
+    <a href="{{ url_for('home') }}" class="btn btn-secondary">Retour au tableau de bord</a>
+</div>
+{% endblock %}

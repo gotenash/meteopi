@@ -1,10 +1,10 @@
 #!/bin/bash
 # Utiliser des chemins absolus pour plus de robustesse
 # Assurez-vous que ce chemin correspond bien à votre installation
-BASE_DIR="/home/meteo/station-meteo"
+BASE_DIR=$(dirname "$(readlink -f "$0")")
 
 # Créer un répertoire de logs si inexistant
-LOG_DIR="/home/meteo/station-meteo/logs"
+LOG_DIR="$BASE_DIR/logs"
 mkdir -p "$LOG_DIR" || exit 1
 
 # Au lieu d'activer l'environnement, on utilise les chemins directs vers les exécutables de venv.

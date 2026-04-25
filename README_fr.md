@@ -22,6 +22,7 @@ Un projet complet de station météo basé sur Raspberry Pi, comprenant la colle
     *   Graphiques de cumul de pluie journalier.
     *   Statistiques Min/Max (Jour, Semaine, Mois).
 *   **Imagerie Satellite** : Récupère et anime automatiquement les cartes de couverture nuageuse depuis OpenWeatherMap.
+*   **Notifications Telegram** : Envoi périodique de bulletins météo via un bot Telegram configurable.
 *   **Affichage LCD** : Affichage local des mesures actuelles sur un écran LCD Grove RGB avec un fond coloré en fonction de la température.
 *   **Intégration Home Assistant** : Fournit un point de terminaison API JSON (`/api/v1/sensors`) pour l'intégration externe.
 *   **Journalisation robuste** : Les données sont enregistrées dans un fichier CSV avec récupération automatique en cas de corruption.
@@ -34,7 +35,8 @@ Un projet complet de station météo basé sur Raspberry Pi, comprenant la colle
     *   **DHT11** (GPIO 4) : Capteur de secours Température/Humidité.
     *   **AS5600** (I2C) : Capteur de position angulaire magnétique pour la Girouette.
     *   **Pluviomètre** (GPIO 5) : Mécanisme à auget basculeur.
-    *   **Anémomètre** (GPIO 6) : Capteur de vitesse du vent à impulsions.
+    *   **Anémomètre** (GPIO 6) : Capteur à effet Hall (3 fils).
+    *   **Bouton LCD** (GPIO 26) : Bouton poussoir pour changer l'affichage.
 *   **Affichage** : Écran LCD Grove RGB (I2C).
 
 ### 🖨 Sources des Pièces Imprimées en 3D
@@ -51,14 +53,21 @@ Ce projet intègre des conceptions existantes de Thingiverse pour les composants
 | **LCD** | I2C | 0x3e, 0x62 |
 | **DHT11** | GPIO | GPIO 4 |
 | **Pluviomètre** | GPIO | GPIO 5 |
-| **Anémomètre** | GPIO | GPIO 6 |
+| **Anémomètre** | GPIO | GPIO 6 (Signal), VCC, GND |
+| **Bouton LCD** | GPIO | GPIO 26 |
 
 ## 📦 Installation
 
+1.  **Prérequis : Installer Git**
+    Si Git n'est pas installé sur votre Raspberry Pi (surtout sur une nouvelle installation de Raspberry Pi OS Lite), ouvrez un terminal et exécutez :
+    ```bash
+    sudo apt update && sudo apt install git -y
+    ```
+
 1.  **Cloner le dépôt** :
     ```bash
-    git clone https://github.com/votreutilisateur/weather-station.git
-    cd weather-station
+    git clone https://github.com/gotenash/meteopi.git
+    cd meteopi
     ```
 
 2.  **Installer les dépendances Python** :
@@ -73,7 +82,9 @@ Ce projet intègre des conceptions existantes de Thingiverse pour les composants
     {
         "owm_api_key": "VOTRE_CLE_API_OPENWEATHERMAP",
         "latitude": 48.85,
-        "longitude": 2.35
+        "longitude": 2.35,
+        "telegram_bot_token": "VOTRE_TOKEN_DE_BOT_TELEGRAM",
+        "telegram_chat_id": "VOTRE_CHAT_ID_TELEGRAM"
     }
     ```
 
