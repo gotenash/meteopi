@@ -141,7 +141,7 @@
                     <!-- Direction et Moyenne -->
                     <div style="text-align: center; margin-top: -10px;">
                         <span style="font-weight: bold; font-size: 1.1em;" id="live_dir">--</span>
-                        <span style="color: #666; font-size: 0.9em; margin-left: 5px;">(Moy. {{ wind }})</span>
+                        <span style="color: #666; font-size: 0.9em; margin-left: 5px;">(Moy. {{ wind }} / Raf. {{ wind_gust }})</span>
                     </div>
 
                     <!-- Séparateur et Pluie -->
@@ -223,6 +223,30 @@
                     {% endfor %}
                 {% else %}
                     <p>Pas de données statistiques disponibles.</p>
+                {% endif %}
+            </div>
+
+            <div class="card stats-container">
+                <h3>🌬️ Statistiques du Vent</h3>
+                {% if stats %}
+                    {% set w_scale = wind_scale_max if wind_scale_max > 0 else 1 %}
+                    {% for key in ['day', 'day_1', 'day_2', 'week', 'month'] %}
+                        {% if stats[key] %}
+                            {% set s = stats[key] %}
+                            {% set avg_pct = (s.wind_mean / w_scale) * 100 %}
+                            {% set max_pct = (s.wind_max / w_scale) * 100 %}
+                            <div class="temp-bar-row">
+                                <div class="temp-label">{{ s.label }}</div>
+                                <div class="bar-track">
+                                    <!-- Moyenne (Bleu) -->
+                                    <div class="bar-fill" style="width: {{ avg_pct }}%; background: #3498db; opacity: 0.6; left: 0;"></div>
+                                    <!-- Rafale Max (Orange) -->
+                                    <div class="bar-fill" style="width: {{ max_pct }}%; background: #e67e22; height: 4px; top: 2px; left: 0;"></div>
+                                </div>
+                                <div class="temp-val" style="width: 75px; text-align: right; font-size: 0.85em;">{{ s.wind_mean|round(1) }} / <strong>{{ s.wind_max|round(1) }}</strong></div>
+                            </div>
+                        {% endif %}
+                    {% endfor %}
                 {% endif %}
             </div>
 

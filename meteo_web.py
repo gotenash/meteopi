@@ -20,6 +20,7 @@ import numpy as np # Ajout de numpy pour les calculs
 from werkzeug.security import generate_password_hash, check_password_hash
 import requests # Ajout pour les requêtes API externes
 import json # Ajout pour gérer le fichier de configuration
+import paho.mqtt.client as mqtt # Ajout pour MQTT
 from PIL import Image # Pour la génération du fond de carte
 
 # On désactive l'affichage de Matplotlib sur le serveur
@@ -45,7 +46,6 @@ def cleanup_csv_on_startup(filepath):
 
         # On ne procède à la réécriture que si des caractères corrompus sont trouvés
         if b'\x00' not in content:
-            print(f"Le fichier '{filepath}' est propre. Aucun nettoyage nécessaire.")
             return
 
         print(f"Corruption détectée dans '{filepath}'. Début du nettoyage...")
@@ -72,19 +72,30 @@ CONFIG_FILE = "config.json"
 
 def load_config():
     """Charge la configuration depuis config.json."""
+    default_config = {
+        "owm_api_key": "METTRE_VOTRE_CLE_ICI",
+        "latitude": 48.85,
+        "longitude": 2.35,
+        "telegram_bot_token": "METTRE_VOTRE_TOKEN_ICI",
+        "telegram_chat_id": "",
+        "mqtt_enabled": False,
+        "mqtt_broker": "localhost",
+        "mqtt_port": 1883,
+        "mqtt_user": "",
+        "mqtt_password": "",
+        "mqtt_topic": "meteopi/sensors",
+        "samba_share": "",
+        "samba_user": "",
+        "samba_password": ""
+    }
     try:
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'r') as f:
+                saved_config = json.load(f)
+                # Fusionne les valeurs par défaut avec les valeurs sauvegardées
+                return {**default_config, **saved_config}
+        return default_config
     except (FileNotFoundError, json.JSONDecodeError):
-        # Si le fichier n'existe pas ou est corrompu, on crée une config par défaut
-        default_config = {
-            "owm_api_key": "METTRE_VOTRE_CLE_ICI",
-            "latitude": 48.85, # Paris par défaut
-            "longitude": 2.35,
-            "telegram_bot_token": "METTRE_VOTRE_TOKEN_ICI",
-            "telegram_chat_id": ""
-        }
-        save_config(default_config)
         return default_config
 
 def save_config(config_data):
@@ -111,27 +122,28 @@ def read_and_process_csv(filepath):
         # Réinitialiser l'index après une suppression potentielle de l'en-tête
         df_raw.reset_index(drop=True, inplace=True)
 
-        # Identifier les anciennes lignes (8ème colonne est nulle/NaN) par rapport aux nouvelles
-        # La 8ème colonne a l'index 7
-        is_old_format = df_raw[7].isnull()
-        
-        # Créer le DataFrame final avec les bonnes colonnes
-        df = pd.DataFrame()
-        df['time'] = df_raw[0]
-        df['temp'] = df_raw[1]
-        df['hum'] = df_raw[2]
-        df['pressure'] = df_raw[3]
-        df['rain'] = df_raw[4]
-        df['wind_speed'] = df_raw[5]
+        # Créer le DataFrame final en convertissant les types immédiatement pour éviter les Warnings
+        df = pd.DataFrame({
+            "time": df_raw[0],
+            "temp": pd.to_numeric(df_raw[1], errors='coerce'),
+            "hum": pd.to_numeric(df_raw[2], errors='coerce'),
+            "pressure": pd.to_numeric(df_raw[3], errors='coerce'),
+            "rain": pd.to_numeric(df_raw[4], errors='coerce'),
+            "wind_speed": pd.to_numeric(df_raw[5], errors='coerce'),
+            "wind_gust": np.nan,
+            "wind_dir_str": "N/A"
+        })
 
-        # Pour les anciennes lignes, wind_gust est NaN et wind_dir est dans la colonne 6
-        df.loc[is_old_format, 'wind_gust'] = np.nan
-        df.loc[is_old_format, 'wind_dir_str'] = df_raw.loc[is_old_format, 6]
-
-        # Pour les nouvelles lignes, wind_gust est dans la colonne 6 et wind_dir est dans la colonne 7
-        is_new_format = ~is_old_format
-        df.loc[is_new_format, 'wind_gust'] = df_raw.loc[is_new_format, 6]
-        df.loc[is_new_format, 'wind_dir_str'] = df_raw.loc[is_new_format, 7]
+        # Gestion des formats (Ancien: 7 col, Nouveau: 8 col)
+        is_new_format = df_raw[7].notna()
+        if is_new_format.any():
+            # On assigne les rafales converties en numérique
+            df.loc[is_new_format, 'wind_gust'] = pd.to_numeric(df_raw.loc[is_new_format, 6], errors='coerce')
+            df.loc[is_new_format, 'wind_dir_str'] = df_raw.loc[is_new_format, 7]
+            
+        is_old_format = ~is_new_format
+        if is_old_format.any():
+            df.loc[is_old_format, 'wind_dir_str'] = df_raw.loc[is_old_format, 6]
         
         # --- CORRECTION AUTO : Rafales mal placées dans la direction ---
         # On détecte si la colonne 'wind_dir_str' contient des nombres (ex: "12.5") au lieu de texte ("N", "NE")
@@ -499,12 +511,16 @@ def generate_wind_graph_base64(df):
     fig, ax = plt.subplots(figsize=(8, 4))
     
     # Tracé de la vitesse
-    ax.plot(df_wind['time'], df_wind['wind_speed'], color='tab:blue', linewidth=2, label='Moyenne')
+    ax.plot(df_wind['time'], df_wind['wind_speed'], color='tab:blue', linewidth=2, label='Moyenne (1 min)')
     ax.fill_between(df_wind['time'], df_wind['wind_speed'], color='tab:blue', alpha=0.2)
 
     # Tracé des rafales si disponibles
     if 'wind_gust' in df_wind.columns:
-        ax.plot(df_wind['time'], df_wind['wind_gust'], color='orange', linestyle='None', marker='.', markersize=3, label='Rafales')
+        ax.plot(df_wind['time'], df_wind['wind_gust'], color='orange', linestyle='None', marker='.', markersize=4, label='Rafales (3 sec)')
+        # Ajout d'une ligne pour le record sur la période
+        max_gust = df_wind['wind_gust'].max()
+        if pd.notna(max_gust):
+            ax.axhline(y=max_gust, color='red', linestyle='--', alpha=0.3, label=f'Max: {max_gust:.1f} km/h')
 
     ax.set_ylabel("Vitesse (km/h)")
     ax.set_title("Vent (6 dernières heures)")
@@ -803,10 +819,10 @@ def read_log_tail(filename, num_lines=30):
 @login_required
 def home():
     # Initialisation des variables
-    temp, hum, pressure, rain, wind, wind_dir, last_update, prediction, rain_summary, temp_hum_summary, wind_summary, wind_graph = "N/A", "N/A", "N/A", "N/A", "N/A", "", "inconnue", None, "Analyse en cours...", None, "Analyse en cours...", None
+    temp, hum, pressure, rain, wind, wind_gust, wind_dir, last_update, prediction, rain_summary, temp_hum_summary, wind_summary, wind_graph = "N/A", "N/A", "N/A", "N/A", "N/A", "N/A", "", "inconnue", None, "Analyse en cours...", None, "Analyse en cours...", None
     stats = {}
     scale_min, scale_max = 100, -100 # Valeurs initiales pour déterminer l'échelle des barres
-    rain_scale_max = 0 # Valeur max pour l'échelle de pluie
+    rain_scale_max, wind_scale_max = 0, 0 # Valeurs max pour les échelles
     press_scale_min, press_scale_max = 2000, 0 # Valeurs initiales pour l'échelle de pression
 
     try:
@@ -825,6 +841,7 @@ def home():
             last_reading = df.iloc[-1]
             temp = f"{last_reading['temp']:.1f}"
             wind = f"{last_reading['wind_speed']:.1f}"
+            wind_gust = f"{last_reading['wind_gust']:.1f}" if pd.notna(last_reading['wind_gust']) else "N/A"
             wind_dir = last_reading['wind_dir_str'] if pd.notna(last_reading['wind_dir_str']) else ""
             pressure = f"{last_reading['pressure']:.1f}" if pd.notna(last_reading['pressure']) else "N/A"
             hum = f"{last_reading['hum']:.0f}"
@@ -845,20 +862,32 @@ def home():
 
             for key, label, start_time in periods:
                 df_period = df[df['time'] >= start_time]
+                
+                # Default values if no data for the period
+                p_min, p_max = np.nan, np.nan
+                press_min, press_max = np.nan, np.nan
+                has_press = False
+                w_mean, w_max = np.nan, np.nan
+                rain_sum = 0.0
+                icon = "☀️" # Default icon
+                gradient = "none"
+
                 if not df_period.empty:
                     p_min = df_period['temp'].min()
                     p_max = df_period['temp'].max()
                     
-                    # Calculs Pression
                     press_min = df_period['pressure'].min()
                     press_max = df_period['pressure'].max()
                     has_press = not pd.isna(press_min)
                     
                     if has_press:
-                        if press_min < press_scale_min: press_scale_min = press_min
-                        if press_max > press_scale_max: press_scale_max = press_max
+                        if pd.notna(press_min) and press_min < press_scale_min: press_scale_min = press_min
+                        if pd.notna(press_max) and press_max > press_scale_max: press_scale_max = press_max
 
-                    # Détermination de l'icône météo
+                    w_mean = df_period['wind_speed'].mean()
+                    w_max = df_period['wind_gust'].max() if 'wind_gust' in df_period.columns else df_period['wind_speed'].max()
+                    if pd.notna(w_max) and w_max > wind_scale_max: wind_scale_max = w_max
+
                     rain_sum = df_period['rain'].sum()
                     press_mean = df_period['pressure'].mean()
                     if rain_sum > 0.2:
@@ -867,25 +896,29 @@ def home():
                         icon = "☁️"
                     else:
                         icon = "☀️"
+                    gradient = get_temp_gradient(p_min, p_max)
 
-                    stats[key] = {
-                        'label': label,
-                        'min': p_min,
-                        'max': p_max,
-                        'min_str': f"{p_min:.1f}",
-                        'max_str': f"{p_max:.1f}",
-                        'icon': icon,
-                        'rain_total': rain_sum,
-                        'press_min': press_min if has_press else 0,
-                        'press_max': press_max if has_press else 0,
-                        'has_press': has_press,
-                        'date_iso': now.strftime('%Y-%m-%d') if key == 'day' else None,
-                        'gradient': get_temp_gradient(p_min, p_max)
-                    }
-                    # Mise à jour de l'échelle globale
-                    if p_min < scale_min: scale_min = p_min
-                    if p_max > scale_max: scale_max = p_max
+                    # Update global scales only if data is valid
+                    if pd.notna(p_min) and p_min < scale_min: scale_min = p_min
+                    if pd.notna(p_max) and p_max > scale_max: scale_max = p_max
                     if rain_sum > rain_scale_max: rain_scale_max = rain_sum
+
+                stats[key] = {
+                    'label': label,
+                    'min': p_min if pd.notna(p_min) else 0,
+                    'max': p_max if pd.notna(p_max) else 0,
+                    'min_str': f"{p_min:.1f}" if pd.notna(p_min) else "N/A",
+                    'max_str': f"{p_max:.1f}" if pd.notna(p_max) else "N/A",
+                    'icon': icon,
+                    'rain_total': rain_sum,
+                    'press_min': press_min if pd.notna(press_min) else 0,
+                    'press_max': press_max if pd.notna(press_max) else 0,
+                    'has_press': has_press,
+                    'date_iso': now.strftime('%Y-%m-%d') if key == 'day' else None,
+                    'gradient': gradient,
+                    'wind_mean': w_mean if pd.notna(w_mean) else 0,
+                    'wind_max': w_max if pd.notna(w_max) else 0,
+                }
 
             # --- Ajout des 5 derniers jours ---
             days_fr = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
@@ -896,20 +929,32 @@ def home():
                 
                 df_day = df[(df['time'] >= start) & (df['time'] <= end)]
                 
+                
+                # Default values if no data for the day
+                p_min, p_max = np.nan, np.nan
+                press_min, press_max = np.nan, np.nan
+                has_press = False
+                w_mean, w_max = np.nan, np.nan
+                rain_sum = 0.0
+                icon = "☀️" # Default icon
+                gradient = "none"
+
                 if not df_day.empty:
                     p_min = df_day['temp'].min()
                     p_max = df_day['temp'].max()
                     
-                    # Calculs Pression
                     press_min = df_day['pressure'].min()
                     press_max = df_day['pressure'].max()
                     has_press = not pd.isna(press_min)
                     
                     if has_press:
-                        if press_min < press_scale_min: press_scale_min = press_min
-                        if press_max > press_scale_max: press_scale_max = press_max
+                        if pd.notna(press_min) and press_min < press_scale_min: press_scale_min = press_min
+                        if pd.notna(press_max) and press_max > press_scale_max: press_scale_max = press_max
 
-                    # Détermination de l'icône météo
+                    w_mean = df_day['wind_speed'].mean()
+                    w_max = df_day['wind_gust'].max() if 'wind_gust' in df_day.columns else df_day['wind_speed'].max()
+                    if pd.notna(w_max) and w_max > wind_scale_max: wind_scale_max = w_max
+
                     rain_sum = df_day['rain'].sum()
                     press_mean = df_day['pressure'].mean()
                     if rain_sum > 0.2:
@@ -918,24 +963,29 @@ def home():
                         icon = "☁️"
                     else:
                         icon = "☀️"
+                    gradient = get_temp_gradient(p_min, p_max)
 
-                    stats[f'day_{i}'] = {
-                        'label': days_fr[d.weekday()],
-                        'min': p_min,
-                        'max': p_max,
-                        'min_str': f"{p_min:.1f}",
-                        'max_str': f"{p_max:.1f}",
-                        'icon': icon,
-                        'rain_total': rain_sum,
-                        'press_min': press_min if has_press else 0,
-                        'press_max': press_max if has_press else 0,
-                        'has_press': has_press,
-                        'date_iso': d.strftime('%Y-%m-%d'),
-                        'gradient': get_temp_gradient(p_min, p_max)
-                    }
-                    if p_min < scale_min: scale_min = p_min
-                    if p_max > scale_max: scale_max = p_max
+                    # Update global scales only if data is valid
+                    if pd.notna(p_min) and p_min < scale_min: scale_min = p_min
+                    if pd.notna(p_max) and p_max > scale_max: scale_max = p_max
                     if rain_sum > rain_scale_max: rain_scale_max = rain_sum
+
+                stats[f'day_{i}'] = {
+                    'label': days_fr[d.weekday()],
+                    'min': p_min if pd.notna(p_min) else 0,
+                    'max': p_max if pd.notna(p_max) else 0,
+                    'min_str': f"{p_min:.1f}" if pd.notna(p_min) else "N/A",
+                    'max_str': f"{p_max:.1f}" if pd.notna(p_max) else "N/A",
+                    'icon': icon,
+                    'rain_total': rain_sum,
+                    'press_min': press_min if pd.notna(press_min) else 0,
+                    'press_max': press_max if pd.notna(press_max) else 0,
+                    'has_press': has_press,
+                    'date_iso': d.strftime('%Y-%m-%d'),
+                    'gradient': gradient,
+                    'wind_mean': w_mean if pd.notna(w_mean) else 0,
+                    'wind_max': w_max if pd.notna(w_max) else 0,
+                }
 
             # Ajout d'une petite marge pour l'affichage graphique
             if scale_min != 100: scale_min -= 2
@@ -964,7 +1014,7 @@ def home():
     temp_hum_summary = get_temp_hum_summary(df) if 'df' in locals() and not df.empty else None
     wind_summary = get_wind_summary(df) if 'df' in locals() and not df.empty else "Données non disponibles."
     
-    return render_template("home.html", temp=temp, hum=hum, pressure=pressure, rain=rain, wind=wind, wind_dir=wind_dir, last_update=last_update, prediction=prediction, stats=stats, scale_min=scale_min, scale_max=scale_max, press_scale_min=press_scale_min, press_scale_max=press_scale_max, rain_scale_max=rain_scale_max, rain_summary=rain_summary, temp_hum_summary=temp_hum_summary, wind_summary=wind_summary, wind_graph=wind_graph)
+    return render_template("home.html", temp=temp, hum=hum, pressure=pressure, rain=rain, wind=wind, wind_gust=wind_gust, wind_dir=wind_dir, last_update=last_update, prediction=prediction, stats=stats, scale_min=scale_min, scale_max=scale_max, press_scale_min=press_scale_min, press_scale_max=press_scale_max, rain_scale_max=rain_scale_max, wind_scale_max=wind_scale_max, rain_summary=rain_summary, temp_hum_summary=temp_hum_summary, wind_summary=wind_summary, wind_graph=wind_graph)
 
 @app.route("/pluviometer_logs")
 @login_required
@@ -1263,15 +1313,27 @@ def admin_update_config():
         current_config["samba_user"] = request.form.get('samba_user', '')
         current_config["samba_password"] = request.form.get('samba_password', '')
         
+        # Paramètres MQTT
+        current_config["mqtt_enabled"] = request.form.get('mqtt_enabled') == 'on'
+        current_config["mqtt_broker"] = request.form.get('mqtt_broker', 'localhost')
+        current_config["mqtt_port"] = int(request.form.get('mqtt_port') or 1883)
+        current_config["mqtt_user"] = request.form.get('mqtt_user', '')
+        current_config["mqtt_password"] = request.form.get('mqtt_password', '')
+        current_config["mqtt_topic"] = request.form.get('mqtt_topic', 'meteopi/sensors')
+
         save_config(current_config)
-        flash("Configuration mise à jour avec succès ! Les services concernés (satellite, telegram) vont redémarrer.", "success")
         
         # On recharge la configuration pour la session en cours
         global config, LATITUDE, LONGITUDE, OWM_API_KEY
         config = current_config
-        LATITUDE, LONGITUDE, OWM_API_KEY = config['latitude'], config['longitude'], config['owm_api_key']
+        # Utilisation de valeurs de secours sécurisées pour éviter float(None)
+        LATITUDE = float(config.get('latitude') if config.get('latitude') is not None else 48.85)
+        LONGITUDE = float(config.get('longitude') if config.get('longitude') is not None else 2.35)
+        OWM_API_KEY = config.get('owm_api_key', '')
+
+        flash("Configuration mise à jour avec succès !", "success")
     except ValueError:
-        flash("Erreur : La latitude et la longitude doivent être des nombres.", "danger")
+        flash("Erreur : Vérifiez que les champs numériques (Latitude, Longitude, Port MQTT) sont corrects.", "danger")
     except Exception as e:
         flash(f"Une erreur est survenue : {e}", "danger")
     return redirect(url_for('admin_page'))

@@ -143,7 +143,7 @@ pip install --upgrade pip
 
 echo -e "\e[32m[INFO]\e[0m Installation des dépendances Python restantes..."
 # Installation avec --no-cache-dir pour économiser la RAM sur Pi et éviter les timeouts
-pip install --no-cache-dir numpy pandas matplotlib gpiozero smbus2 adafruit-circuitpython-dht adafruit-circuitpython-bme280 adafruit-circuitpython-as5600 flask flask-login werkzeug requests Pillow gunicorn
+pip install --no-cache-dir numpy pandas matplotlib gpiozero smbus2 adafruit-circuitpython-dht adafruit-circuitpython-bme280 adafruit-circuitpython-as5600 flask flask-login werkzeug requests Pillow gunicorn paho-mqtt
 if [ $? -ne 0 ]; then echo -e "\e[31m[ERROR]\e[0m Échec de l'installation des dépendances Python."; exit 1; fi
 
 echo -e "\e[32m[INFO]\e[0m Installation des dépendances Python terminée."

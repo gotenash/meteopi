@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import csv
 import time
+import json
 from datetime import datetime
 import logging # Ajout pour le logging des événements du pluviomètre
 import smbus2
@@ -9,12 +10,14 @@ import board
 import adafruit_dht
 from adafruit_bme280 import basic as adafruit_bme280
 from adafruit_as5600 import AS5600
+import paho.mqtt.client as mqtt
 from gpiozero import Button
 from grove_rgb_lcd import RgbLcd # Import de la nouvelle librairie pour l'écran
 
 CSV_FILE = "meteo_log.csv"
-WIND_CSV_FILE = "wind_detail_log.csv" # Nouveau fichier pour le vent en temps réel (2s)
+WIND_CSV_FILE = "wind_detail_log.csv" # Nouveau fichier pour le vent en temps réel (3s)
 PLUVIOMETER_EVENT_LOG = "pluviometer_events.log" # Nouveau fichier de log pour les basculements
+CONFIG_FILE = "config.json"
 
 # Configuration du logging pour les événements du pluviomètre
 logging.basicConfig(
@@ -24,6 +27,14 @@ logging.basicConfig(
         logging.FileHandler(PLUVIOMETER_EVENT_LOG)
     ]
 )
+
+def load_config():
+    """Charge la configuration depuis config.json."""
+    try:
+        with open(CONFIG_FILE, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 # ---- Configuration du pluviomètre ----
 RAIN_PIN = 5  # GPIO 5
@@ -64,6 +75,34 @@ last_wind_speed = 0.0
 # Variables pour le calcul précis du temps écoulé (éviter la dérive des Timers)
 last_sample_time = time.time()
 last_realtime_time = time.time()
+
+# ---- Initialisation MQTT ----
+mqtt_client = None
+
+def setup_mqtt(current_config):
+    global mqtt_client
+    if current_config.get("mqtt_enabled"):
+        try:
+            # Compatibilité paho-mqtt 2.0+ (CallbackAPIVersion requis)
+            try:
+                client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+            except AttributeError:
+                # Ancienne version de paho-mqtt
+                client = mqtt.Client()
+            
+            if current_config.get("mqtt_user"):
+                client.username_pw_set(current_config["mqtt_user"], current_config["mqtt_password"])
+            
+            client.connect(current_config.get("mqtt_broker", "localhost"), int(current_config.get("mqtt_port", 1883)), 60)
+            client.loop_start()
+            print(f"✅ MQTT connecté au broker {current_config['mqtt_broker']}")
+            return client
+        except Exception as e:
+            print(f"❌ Erreur de connexion MQTT : {e}")
+    return None
+
+config = load_config()
+mqtt_client = setup_mqtt(config)
 
 def count_tip():
     """Fonction appelée à chaque basculement de l'auget."""
@@ -254,10 +293,21 @@ def sample_and_log():
     Fonction exécutée toutes les SAMPLE_TIME secondes pour lire les capteurs,
     calculer les valeurs et les enregistrer.
     """
-    global wind_pulse_count, tip_count, last_temp, last_hum, last_pressure, daily_rain, current_day, wind_gust_pulse_max, last_sample_time
+    global wind_pulse_count, tip_count, last_temp, last_hum, last_pressure, daily_rain, current_day, wind_gust_pulse_max, last_sample_time, config, mqtt_client
     
     # On configure le timer pour qu'il se relance à la fin de l'exécution
     threading.Timer(SAMPLE_TIME, sample_and_log).start()
+
+    # Rechargement de la config pour détecter les changements (ex: activation MQTT via Web)
+    new_config = load_config()
+    if new_config.get("mqtt_enabled") != config.get("mqtt_enabled") or \
+       new_config.get("mqtt_broker") != config.get("mqtt_broker"):
+        print("🔄 Changement de configuration MQTT détecté, reconnexion...")
+        if mqtt_client: 
+            mqtt_client.loop_stop()
+            mqtt_client.disconnect()
+        mqtt_client = setup_mqtt(new_config)
+    config = new_config
 
     temp, hum, pressure = read_sensors()
     
@@ -287,7 +337,7 @@ def sample_and_log():
 
     # Calcul de la rafale (basé sur le max observé dans update_lcd_realtime)
     with gust_lock:
-        gust_hz = wind_gust_pulse_max / 2.0 # Fréquence sur le créneau de 2s le plus rapide
+        gust_hz = wind_gust_pulse_max / 3.0 # Fréquence sur le créneau de 3s le plus rapide
         wind_gust_pulse_max = 0 # Reset pour la minute suivante
     
     wind_gust_kmh = gust_hz * WIND_SPEED_FACTOR
@@ -319,6 +369,24 @@ def sample_and_log():
         writer.writerow([now, temp_val, hum_val, pressure_val, f"{rain_since_last:.4f}", f"{wind_speed_kmh:.2f}", f"{wind_gust_kmh:.2f}", wind_dir_str])
         f.flush()
 
+    # --- Envoi MQTT ---
+    if mqtt_client:
+        try:
+            mqtt_data = {
+                "temperature": round(temp, 2) if temp is not None else None,
+                "humidity": round(hum, 1) if hum is not None else None,
+                "pressure": round(pressure, 1) if pressure is not None else None,
+                "rain_since_last": round(rain_since_last, 4),
+                "daily_rain": round(daily_rain, 2),
+                "wind_speed": round(wind_speed_kmh, 1),
+                "wind_gust": round(wind_gust_kmh, 1),
+                "wind_direction": wind_dir_str,
+                "timestamp": now
+            }
+            mqtt_client.publish(config.get("mqtt_topic", "meteopi/sensors"), json.dumps(mqtt_data))
+        except Exception as e:
+            print(f"⚠️ Erreur publication MQTT : {e}")
+
     pressure_str = f"📈 {pressure:.1f}hPa" if pressure is not None else ""
     temp_disp = f"{temp:.1f}°C" if temp is not None else "--.-°C"
     hum_disp = f"{hum:.0f}%" if hum is not None else "--%"
@@ -327,17 +395,17 @@ def sample_and_log():
     # La mise à jour de l'écran LCD est maintenant gérée par update_lcd_realtime()
 
 def update_lcd_realtime():
-    """Met à jour l'écran LCD toutes les 2s pour une réactivité temps réel."""
+    """Met à jour l'écran LCD toutes les 3s pour une réactivité temps réel."""
     global wind_pulse_count_display, last_wind_speed, wind_gust_pulse_max, last_realtime_time
     
-    # Relance le timer pour 2 secondes
-    threading.Timer(2.0, update_lcd_realtime).start()
+    # Relance le timer pour 3 secondes (Norme OMM pour les rafales)
+    threading.Timer(3.0, update_lcd_realtime).start()
     
-    # Calcul du temps réel écoulé (ex: 2.01s au lieu de 2.0s)
+    # Calcul du temps réel écoulé (ex: 3.01s au lieu de 3.0s)
     current_time = time.time()
     elapsed = current_time - last_realtime_time
     last_realtime_time = current_time
-    if elapsed <= 0: elapsed = 2.0
+    if elapsed <= 0: elapsed = 3.0
 
     # --- 1. Calculs (Exécutés même sans écran LCD) ---
     with wind_display_lock:
@@ -346,14 +414,14 @@ def update_lcd_realtime():
     
     # Mise à jour de la rafale max pour la minute en cours
     with gust_lock:
-        # On normalise sur 2s pour garder la compatibilité avec la logique de l'historique
-        current_gust_pulses = wind_hz * 2.0
+        # On normalise sur 3s pour garder la compatibilité avec la logique de l'historique
+        current_gust_pulses = wind_hz * 3.0
         if current_gust_pulses > wind_gust_pulse_max:
             wind_gust_pulse_max = current_gust_pulses
 
     last_wind_speed = wind_hz * WIND_SPEED_FACTOR
 
-    # --- 2. Enregistrement haute fréquence (toutes les 2s) ---
+    # --- 2. Enregistrement haute fréquence (toutes les 3s) ---
     try:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         # Lecture de la direction (si dispo)

@@ -104,14 +104,40 @@
             <input type="password" id="samba_password" name="samba_password" value="{{ config.samba_password or '' }}">
         </div>
 
+        <h4 style="margin-top: 20px; margin-bottom: 10px; border-top: 1px solid #eee; padding-top: 15px;">📡 MQTT (Home Assistant)</h4>
+        <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
+            <input type="checkbox" id="mqtt_enabled" name="mqtt_enabled" {% if config.mqtt_enabled %}checked{% endif %} style="width: auto;">
+            <label for="mqtt_enabled" style="margin-bottom: 0;">Activer l'envoi MQTT</label>
+        </div>
+        <div class="form-group">
+            <label for="mqtt_broker">Broker MQTT (ex: localhost ou 192.168.1.50)</label>
+            <input type="text" id="mqtt_broker" name="mqtt_broker" value="{{ config.mqtt_broker or 'localhost' }}">
+        </div>
+        <div class="form-group">
+            <label for="mqtt_port">Port MQTT</label>
+            <input type="number" id="mqtt_port" name="mqtt_port" value="{{ config.mqtt_port or 1883 }}">
+        </div>
+        <div class="form-group">
+            <label for="mqtt_user">Utilisateur MQTT (optionnel)</label>
+            <input type="text" id="mqtt_user" name="mqtt_user" value="{{ config.mqtt_user or '' }}">
+        </div>
+        <div class="form-group">
+            <label for="mqtt_password">Mot de passe MQTT (optionnel)</label>
+            <input type="password" id="mqtt_password" name="mqtt_password" value="{{ config.mqtt_password or '' }}">
+        </div>
+        <div class="form-group">
+            <label for="mqtt_topic">Topic de base</label>
+            <input type="text" id="mqtt_topic" name="mqtt_topic" value="{{ config.mqtt_topic or 'meteopi/sensors' }}">
+        </div>
+
         <div style="display: flex; gap: 10px; margin-top: 20px;">
             <button type="submit" class="btn">Sauvegarder la configuration</button>
-            
-            <!-- Le bouton de test a son propre formulaire pour ne pas soumettre la config -->
-            <form action="{{ url_for('admin_test_telegram') }}" method="POST" style="margin: 0;">
-                <button type="submit" class="btn btn-secondary">Tester la notification</button>
-            </form>
         </div>
+    </form>
+
+    <!-- Formulaire séparé pour le test Telegram (pour éviter l'imbrication) -->
+    <form action="{{ url_for('admin_test_telegram') }}" method="POST" style="margin-top: 10px;">
+        <button type="submit" class="btn btn-secondary">Tester la notification Telegram</button>
     </form>
 </div>
 
