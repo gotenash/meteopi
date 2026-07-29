@@ -28,6 +28,12 @@ fi
 
 echo "[$(date)] Démarrage de la sauvegarde vers $SMB_SHARE"
 
+# --- NOUVEAU : Persistance locale sur SD avant Samba ---
+PERSISTENT_DIR="$PROJECT_DIR/data_persistent"
+mkdir -p "$PERSISTENT_DIR"
+echo "📦 Synchronisation locale RAM -> SD..."
+cp -rp "$PROJECT_DIR/data/." "$PERSISTENT_DIR/"
+
 # 1. Création du point de montage si inexistant
 if [ ! -d "$MOUNT_POINT" ]; then
     echo "📂 Création du point de montage $MOUNT_POINT"
@@ -55,12 +61,16 @@ echo "💾 Copie des fichiers en cours..."
 REMOTE_DIR="$MOUNT_POINT/MeteoPi_Backup"
 sudo mkdir -p "$REMOTE_DIR"
 
-FILES=("meteo_log.csv" "wind_detail_log.csv" "config.json")
+FILES=("data/meteo_log.csv" "data/wind_detail_log.csv" "config.json")
 
 for file in "${FILES[@]}"; do
     if [ -f "$PROJECT_DIR/$file" ]; then
-        # Copie avec timestamp (ex: meteo_log_2026-03-19.csv)
-        sudo cp "$PROJECT_DIR/$file" "$REMOTE_DIR/${file%.*}_$DATE_SUFFIX.${file##*.}"
+        # On extrait uniquement le nom du fichier sans le chemin (ex: meteo_log.csv)
+        FILENAME=$(basename "$file")
+        NAME="${FILENAME%.*}"
+        EXT="${FILENAME##*.}"
+        # Copie vers le NAS avec le timestamp, sans recréer l'arborescence 'data/'
+        sudo cp "$PROJECT_DIR/$file" "$REMOTE_DIR/${NAME}_$DATE_SUFFIX.${EXT}"
         echo "✅ $file copié."
     fi
 done

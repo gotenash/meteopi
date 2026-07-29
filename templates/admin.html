@@ -4,12 +4,14 @@
 
 {% block content %}
 <div class="card">
-    <h2>Administration</h2>
-    <p>Cette section permet d'effectuer des actions de maintenance sur la station météo.</p>
+    <h2>🛠️ Espace Administration</h2>
+    <p>Gérez ici les paramètres avancés, surveillez l'état des capteurs et sécurisez vos données météo.</p>
 </div>
 
+<!-- SECTION 1 : DIAGNOSTIC -->
 <div class="card">
-    <h3>État du Système</h3>
+    <h3>🔍 Diagnostic & État du Système</h3>
+    <p style="color: #666; margin-bottom: 20px;">Vérifiez si les capteurs communiquent correctement et consultez les journaux d'activité en temps réel.</p>
     {% if system_status %}
     <div style="display: flex; gap: 20px; flex-wrap: wrap;">
         <div style="flex: 1; min-width: 200px; background: #f9f9f9; padding: 15px; border-radius: 8px;">
@@ -30,204 +32,191 @@
     {% else %}
     <p>État du système non disponible.</p>
     {% endif %}
-</div>
 
-<div class="card">
-    <h3>Logs Système (Dernières lignes)</h3>
-    <p>Aperçu des fichiers de logs pour le débogage.</p>
-    
-    {% if logs %}
-    {% for label, content in logs.items() %}
-        <div style="margin-bottom: 15px;">
-            <h4 style="margin-bottom: 5px; color: #555;">{{ label }}</h4>
-            <div class="log-preview">
-                <pre>{{ content }}</pre>
+    <div style="margin-top: 25px; border-top: 1px solid #eee; padding-top: 20px;">
+        <h4 style="color: #555;">📋 Journaux système (Dernières lignes)</h4>
+        {% if logs %}
+        {% for label, content in logs.items() %}
+            <div style="margin-bottom: 15px; text-align: left;">
+                <label style="font-size: 0.85em; font-weight: bold; color: #777;">{{ label }}</label>
+                <div class="log-preview">
+                    <pre>{{ content }}</pre>
+                </div>
             </div>
-        </div>
-    {% endfor %}
-    {% else %}
-    <p>Logs non disponibles.</p>
-    {% endif %}
-    
-    <style>
-        .log-preview pre {
-            background-color: #2b2b2b;
-            color: #f1f1f1;
-            padding: 10px;
-            border-radius: 4px;
-            max-height: 200px;
-            overflow-y: auto;
-            font-size: 0.85em;
-            white-space: pre-wrap;
-        }
-    </style>
+        {% endfor %}
+        {% else %}
+        <p>Logs non disponibles.</p>
+        {% endif %}
+    </div>
+
+    <div style="margin-top: 20px; padding: 10px; background: #eef2f7; border-radius: 5px;">
+        <p style="margin-bottom: 10px; font-size: 0.9em;">Besoin de vérifier la précision du pluviomètre ?</p>
+        <a href="{{ url_for('pluviometer_logs_page') }}" class="btn btn-secondary" style="font-size: 0.9em;">Consulter les basculements bruts</a>
+    </div>
 </div>
 
+<!-- SECTION 2 : CONFIGURATION -->
 <div class="card">
-    <h3>Configuration Générale</h3>
+    <h3>⚙️ Configuration & Services</h3>
+    <p style="color: #666; margin-bottom: 20px;">Paramétrez la localisation de votre station et activez les services tiers (Telegram, MQTT, Samba).</p>
+    
     <form action="{{ url_for('admin_update_config') }}" method="POST" class="config-form">
-        <div class="form-group">
-            <label for="latitude">Latitude</label>
-            <input type="text" id="latitude" name="latitude" value="{{ config.latitude }}" required>
-        </div>
-        <div class="form-group">
-            <label for="longitude">Longitude</label>
-            <input type="text" id="longitude" name="longitude" value="{{ config.longitude }}" required>
-        </div>
-        <div class="form-group">
-            <label for="owm_api_key">Clé API OpenWeatherMap</label>
-            <input type="text" id="owm_api_key" name="owm_api_key" value="{{ config.owm_api_key }}" required>
-        </div>
+        <fieldset style="border: none; padding: 0; margin-bottom: 25px;">
+            <legend style="font-weight: bold; color: #2c3e50; border-bottom: 1px solid #eee; width: 100%; padding-bottom: 5px; margin-bottom: 15px;">📍 Localisation & Météo</legend>
+            <div class="form-group">
+                <label for="latitude">Latitude</label>
+                <input type="text" id="latitude" name="latitude" value="{{ config.latitude }}" required>
+            </div>
+            <div class="form-group">
+                <label for="longitude">Longitude</label>
+                <input type="text" id="longitude" name="longitude" value="{{ config.longitude }}" required>
+            </div>
+            <div class="form-group">
+                <label for="owm_api_key">Clé API OpenWeatherMap</label>
+                <input type="text" id="owm_api_key" name="owm_api_key" value="{{ config.owm_api_key }}" required>
+                <small style="color: #888;">Utilisée pour les prévisions et les images satellites.</small>
+            </div>
+        </fieldset>
 
-        <h4 style="margin-top: 20px; margin-bottom: 10px; border-top: 1px solid #eee; padding-top: 15px;">🔔 Notifications Telegram</h4>
-        <div class="form-group">
-            <label for="telegram_bot_token">Token du Bot Telegram</label>
-            <input type="text" id="telegram_bot_token" name="telegram_bot_token" value="{{ config.telegram_bot_token or '' }}" placeholder="Ex: 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
-        </div>
-        <div class="form-group">
-            <label for="telegram_chat_id">Chat ID</label>
-            <input type="text" id="telegram_chat_id" name="telegram_chat_id" value="{{ config.telegram_chat_id or '' }}" placeholder="ID de l'utilisateur ou du groupe">
-            <small style="display:block; color:#777; margin-top:5px;">Pour obtenir votre Chat ID, envoyez <code>/start</code> au bot <a href="https://t.me/userinfobot" target="_blank" rel="noopener noreferrer">@userinfobot</a>.</small>
-        </div>
+        <fieldset style="border: none; padding: 0; margin-bottom: 25px;">
+            <legend style="font-weight: bold; color: #2c3e50; border-bottom: 1px solid #eee; width: 100%; padding-bottom: 5px; margin-bottom: 15px;">🔔 Notifications Telegram</legend>
+            <div class="form-group">
+                <label for="telegram_bot_token">Token du Bot Telegram</label>
+                <input type="text" id="telegram_bot_token" name="telegram_bot_token" value="{{ config.telegram_bot_token or '' }}" placeholder="Ex: 123456:ABC-DEF...">
+            </div>
+            <div class="form-group">
+                <label for="telegram_chat_id">Chat ID</label>
+                <input type="text" id="telegram_chat_id" name="telegram_chat_id" value="{{ config.telegram_chat_id or '' }}">
+                <small style="display:block; color:#777; margin-top:5px;">Obtenez votre ID via <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a>.</small>
+            </div>
+        </fieldset>
 
-        <h4 style="margin-top: 20px; margin-bottom: 10px; border-top: 1px solid #eee; padding-top: 15px;">💾 Sauvegarde Samba (Windows/NAS)</h4>
-        <div class="form-group">
-            <label for="samba_share">Chemin du partage (ex: //192.168.1.15/Sauvegardes)</label>
-            <input type="text" id="samba_share" name="samba_share" value="{{ config.samba_share or '' }}" placeholder="//IP/Dossier">
-        </div>
-        <div class="form-group">
-            <label for="samba_user">Utilisateur</label>
-            <input type="text" id="samba_user" name="samba_user" value="{{ config.samba_user or '' }}">
-        </div>
-        <div class="form-group">
-            <label for="samba_password">Mot de passe</label>
-            <input type="password" id="samba_password" name="samba_password" value="{{ config.samba_password or '' }}">
-        </div>
+        <fieldset style="border: none; padding: 0; margin-bottom: 25px;">
+            <legend style="font-weight: bold; color: #2c3e50; border-bottom: 1px solid #eee; width: 100%; padding-bottom: 5px; margin-bottom: 15px;">💾 Sauvegarde Samba (NAS)</legend>
+            <div class="form-group">
+                <label for="samba_share">Chemin du partage</label>
+                <input type="text" id="samba_share" name="samba_share" value="{{ config.samba_share or '' }}" placeholder="//192.168.1.XX/Dossier">
+            </div>
+            <div class="form-group">
+                <label for="samba_user">Utilisateur</label>
+                <input type="text" id="samba_user" name="samba_user" value="{{ config.samba_user or '' }}">
+            </div>
+            <div class="form-group">
+                <label for="samba_password">Mot de passe</label>
+                <input type="password" id="samba_password" name="samba_password" value="{{ config.samba_password or '' }}">
+            </div>
+        </fieldset>
 
-        <h4 style="margin-top: 20px; margin-bottom: 10px; border-top: 1px solid #eee; padding-top: 15px;">📡 MQTT (Home Assistant)</h4>
-        <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
-            <input type="checkbox" id="mqtt_enabled" name="mqtt_enabled" {% if config.mqtt_enabled %}checked{% endif %} style="width: auto;">
-            <label for="mqtt_enabled" style="margin-bottom: 0;">Activer l'envoi MQTT</label>
-        </div>
-        <div class="form-group">
-            <label for="mqtt_broker">Broker MQTT (ex: localhost ou 192.168.1.50)</label>
-            <input type="text" id="mqtt_broker" name="mqtt_broker" value="{{ config.mqtt_broker or 'localhost' }}">
-        </div>
-        <div class="form-group">
-            <label for="mqtt_port">Port MQTT</label>
-            <input type="number" id="mqtt_port" name="mqtt_port" value="{{ config.mqtt_port or 1883 }}">
-        </div>
-        <div class="form-group">
-            <label for="mqtt_user">Utilisateur MQTT (optionnel)</label>
-            <input type="text" id="mqtt_user" name="mqtt_user" value="{{ config.mqtt_user or '' }}">
-        </div>
-        <div class="form-group">
-            <label for="mqtt_password">Mot de passe MQTT (optionnel)</label>
-            <input type="password" id="mqtt_password" name="mqtt_password" value="{{ config.mqtt_password or '' }}">
-        </div>
-        <div class="form-group">
-            <label for="mqtt_topic">Topic de base</label>
-            <input type="text" id="mqtt_topic" name="mqtt_topic" value="{{ config.mqtt_topic or 'meteopi/sensors' }}">
-        </div>
+        <fieldset style="border: none; padding: 0;">
+            <legend style="font-weight: bold; color: #2c3e50; border-bottom: 1px solid #eee; width: 100%; padding-bottom: 5px; margin-bottom: 15px;">📡 MQTT (Domotique)</legend>
+            <div class="form-group" style="display: flex; align-items: center; gap: 10px;">
+                <input type="checkbox" id="mqtt_enabled" name="mqtt_enabled" {% if config.mqtt_enabled %}checked{% endif %} style="width: auto;">
+                <label for="mqtt_enabled" style="margin-bottom: 0;">Activer l'envoi MQTT</label>
+            </div>
+            <div class="form-group">
+                <label for="mqtt_broker">Broker MQTT</label>
+                <input type="text" id="mqtt_broker" name="mqtt_broker" value="{{ config.mqtt_broker or 'localhost' }}">
+            </div>
+            <div class="form-group">
+                <label for="mqtt_port">Port MQTT</label>
+                <input type="number" id="mqtt_port" name="mqtt_port" value="{{ config.mqtt_port or 1883 }}">
+            </div>
+            <div class="form-group">
+                <label for="mqtt_topic">Topic de base</label>
+                <input type="text" id="mqtt_topic" name="mqtt_topic" value="{{ config.mqtt_topic or 'meteopi/sensors' }}">
+            </div>
+        </fieldset>
 
         <div style="display: flex; gap: 10px; margin-top: 20px;">
             <button type="submit" class="btn">Sauvegarder la configuration</button>
         </div>
     </form>
 
-    <!-- Formulaire séparé pour le test Telegram (pour éviter l'imbrication) -->
-    <form action="{{ url_for('admin_test_telegram') }}" method="POST" style="margin-top: 10px;">
-        <button type="submit" class="btn btn-secondary">Tester la notification Telegram</button>
+    <form action="{{ url_for('admin_test_telegram') }}" method="POST" style="margin-top: 20px; padding-top: 15px; border-top: 1px dashed #ccc;">
+        <button type="submit" class="btn btn-secondary">🔔 Tester l'envoi Telegram</button>
     </form>
 </div>
 
+<!-- SECTION 3 : GESTION DES DONNÉES -->
 <div class="card">
-    <h3>Sécurité</h3>
-    <form action="{{ url_for('admin_change_password') }}" method="POST" class="config-form">
-        <div class="form-group">
-            <label for="current_password">Mot de passe actuel</label>
-            <input type="password" id="current_password" name="current_password" required>
+    <h3>📂 Gestion des Données & Restauration</h3>
+    <p style="color: #666; margin-bottom: 20px;">Exportez vos relevés pour analyse ou restaurez une sauvegarde précédente.</p>
+    
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
+        <div style="background: #fdfdfd; border: 1px solid #eee; padding: 15px; border-radius: 8px;">
+            <h4 style="margin-top:0;">📤 Exportation</h4>
+            <a href="{{ url_for('download') }}" class="btn" style="width: 100%; box-sizing: border-box; margin-bottom: 10px;">Mesures (CSV)</a>
+            <a href="{{ url_for('download_wind_detail') }}" class="btn" style="width: 100%; box-sizing: border-box;">Détail Vent (CSV)</a>
         </div>
-        <div class="form-group">
-            <label for="new_password">Nouveau mot de passe</label>
-            <input type="password" id="new_password" name="new_password" required>
+        
+        <div style="background: #fdfdfd; border: 1px solid #eee; padding: 15px; border-radius: 8px;">
+            <h4 style="margin-top:0;">📥 Importation</h4>
+            <form action="{{ url_for('admin_upload_csv') }}" method="POST" enctype="multipart/form-data">
+                <input type="file" name="file" accept=".csv" required style="font-size: 0.8em; margin-bottom: 10px;">
+                <button type="submit" class="btn btn-secondary" style="width: 100%;">Restaurer CSV</button>
+            </form>
         </div>
-        <div class="form-group">
-            <label for="confirm_password">Confirmer le nouveau mot de passe</label>
-            <input type="password" id="confirm_password" name="confirm_password" required>
-        </div>
-        <button type="submit" class="btn">Changer le mot de passe</button>
-    </form>
+    </div>
 </div>
 
+<!-- SECTION 4 : PERSONNALISATION -->
 <div class="card">
-    <h3>Sauvegarde des données</h3>
-    <p>Téléchargez une copie du fichier de données (meteo_log.csv) pour le sauvegarder sur votre ordinateur.</p>
-    <a href="{{ url_for('download') }}" class="btn">Télécharger la sauvegarde (CSV)</a>
-    <p style="margin-top: 15px;">Téléchargez les données brutes du vent (instantané toutes les 2s).</p>
-    <a href="{{ url_for('download_wind_detail') }}" class="btn">Télécharger le détail Vent (CSV)</a>
-    <p style="margin-top: 15px;">Téléchargez une copie du fichier de configuration (config.json).</p>
-    <a href="{{ url_for('download_config') }}" class="btn">Télécharger la configuration (JSON)</a>
+    <h3>🎨 Personnalisation Graphique</h3>
+    <p style="color: #666; margin-bottom: 20px;">Améliorez le rendu visuel de vos cartes satellites.</p>
+    <div style="text-align: left; max-width: 600px; margin: 0 auto;">
+        <p style="font-size: 0.9em;">Générez ou téléchargez un calque (image PNG transparente) pour superposer les frontières ou les côtes sur la vue satellite.</p>
+        <form action="{{ url_for('admin_generate_overlay') }}" method="POST" style="margin-bottom: 20px;">
+            <div style="margin-bottom: 10px;">
+                <input type="checkbox" id="grayscale" name="grayscale" value="true">
+                <label for="grayscale" style="display:inline; font-weight:normal;">Version Noir & Blanc</label>
+            </div>
+            <button type="submit" class="btn" style="background-color: #27ae60;">🗺️ Générer via OpenStreetMap</button>
+        </form>
+    </div>
 </div>
 
-<div class="card">
-    <h3>Restauration des données</h3>
-    <p>Restaurez un fichier de sauvegarde (CSV). <strong>Attention :</strong> les données actuelles seront remplacées (une copie .bak sera créée).</p>
-    <form action="{{ url_for('admin_upload_csv') }}" method="POST" enctype="multipart/form-data" class="config-form">
-        <div class="form-group">
-            <label for="file">Fichier de sauvegarde (.csv)</label>
-            <input type="file" id="file" name="file" accept=".csv" required>
+<!-- SECTION 5 : SÉCURITÉ & MAINTENANCE -->
+<div class="card" style="border-top: 3px solid #f44336;">
+    <h3>🛡️ Sécurité & Maintenance Critique</h3>
+    <p style="color: #666; margin-bottom: 20px;">Modifiez vos accès ou effectuez un nettoyage complet du système.</p>
+    
+    <div style="display: flex; gap: 20px; flex-wrap: wrap; text-align: left;">
+        <div style="flex: 1; min-width: 280px;">
+            <h4 style="margin-top:0;">🔐 Accès Administrateur</h4>
+            <form action="{{ url_for('admin_change_password') }}" method="POST">
+                <input type="password" name="current_password" placeholder="Mot de passe actuel" required style="width: 100%; margin-bottom: 10px; padding: 8px;">
+                <input type="password" name="new_password" placeholder="Nouveau mot de passe" required style="width: 100%; margin-bottom: 10px; padding: 8px;">
+                <button type="submit" class="btn" style="width: 100%;">Changer le mot de passe</button>
+            </form>
         </div>
-        <button type="submit" class="btn">Restaurer les données</button>
-    </form>
-
-    <hr style="margin: 20px 0; border: 0; border-top: 1px solid #ccc;">
-
-    <p>Restaurez un fichier de configuration (JSON). <strong>Attention :</strong> la configuration actuelle sera remplacée.</p>
-    <form action="{{ url_for('admin_upload_config') }}" method="POST" enctype="multipart/form-data" class="config-form">
-        <div class="form-group">
-            <label for="config_file">Fichier de configuration (.json)</label>
-            <input type="file" id="config_file" name="file" accept=".json" required>
+        
+        <div style="flex: 1; min-width: 280px; border-left: 1px solid #eee; padding-left: 20px;">
+            <h4 style="margin-top:0; color: #f44336;">⚠️ Zone de Danger</h4>
+            <p style="font-size: 0.85em; color: #777;">L'effacement des données supprimera l'intégralité de l'historique CSV et des logs. <strong>Cette action est irréversible.</strong></p>
+            <form action="{{ url_for('admin_clear_data') }}" method="POST" onsubmit="return confirm('ALERTE : Êtes-vous certain de vouloir supprimer tout l\'historique ?');">
+                <button type="submit" class="btn btn-danger" style="width: 100%;">🗑️ Effacer toutes les données</button>
+            </form>
         </div>
-        <button type="submit" class="btn">Restaurer la configuration</button>
-    </form>
+    </div>
 </div>
 
-<div class="card">
-    <h3>Personnalisation</h3>
-    <p>Ajoutez un calque (image transparente PNG) qui se superposera à la vue satellite (ex: frontières, côtes).</p>
-    <form action="{{ url_for('admin_upload_overlay') }}" method="POST" enctype="multipart/form-data" class="config-form">
-        <div class="form-group">
-            <label for="overlay_file">Image du calque (map_overlay.png)</label>
-            <input type="file" id="overlay_file" name="file" accept="image/png" required>
-            <small style="display:block; color:#777; margin-top:5px;">Astuce : Utilisez une image PNG avec fond transparent de la même taille/zoom que vos images satellites.</small>
-        </div>
-        <button type="submit" class="btn">Mettre à jour le calque</button>
-    </form>
-
-    <div style="text-align: center; margin: 15px 0; font-weight: bold; color: #777;">OU</div>
-
-    <p>Générez automatiquement le fond de carte en utilisant votre position actuelle et OpenStreetMap.</p>
-    <form action="{{ url_for('admin_generate_overlay') }}" method="POST">
-        <div style="margin-bottom: 10px;">
-            <input type="checkbox" id="grayscale" name="grayscale" value="true">
-            <label for="grayscale" style="display:inline; font-weight:normal;">Convertir en noir et blanc</label>
-        </div>
-        <button type="submit" class="btn" style="background-color: #27ae60;">Générer via OpenStreetMap</button>
-    </form>
-</div>
-
-<div class="card">
-    <h3>Gestion des données</h3>
-    <p>Attention : cette action effacera l'intégralité de l'historique des données météo et des logs du pluviomètre. Cette opération est irréversible.</p>
-    <form action="{{ url_for('admin_clear_data') }}" method="POST" onsubmit="return confirm('Êtes-vous sûr de vouloir effacer toutes les données ?');">
-        <button type="submit" class="btn btn-danger">Effacer toutes les données</button>
-    </form>
-</div>
-
-<div class="card">
-    <h3>Logs du pluviomètre</h3>
-    <p>Consultez les logs bruts des basculements du pluviomètre pour le débogage.</p>
-    <a href="{{ url_for('pluviometer_logs_page') }}" class="btn">Voir les logs du pluviomètre</a>
-</div>
+<style>
+    .log-preview pre {
+        background-color: #2b2b2b;
+        color: #f1f1f1;
+        padding: 10px;
+        border-radius: 4px;
+        max-height: 180px;
+        overflow-y: auto;
+        font-size: 0.8em;
+        white-space: pre-wrap;
+        margin: 0;
+    }
+    .config-form input[type="text"], 
+    .config-form input[type="number"], 
+    .config-form input[type="password"] {
+        border: 1px solid #ddd;
+        background: #fff;
+    }
+</style>
 {% endblock %}

@@ -68,6 +68,13 @@ def cleanup_csv_on_startup(filepath):
     except Exception as e:
         print(f"Erreur critique lors du nettoyage du fichier CSV : {e}")
 
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+
+CSV_FILE = os.path.join(DATA_DIR, "meteo_log.csv")
+WIND_CSV_FILE = os.path.join(DATA_DIR, "wind_detail_log.csv")
+PLUVIOMETER_EVENT_LOG = os.path.join(DATA_DIR, "pluviometer_events.log")
 CONFIG_FILE = "config.json"
 
 def load_config():
@@ -174,7 +181,7 @@ app = Flask(__name__)
 # Clé secrète pour la gestion des sessions Flask (nécessaire pour le login)
 
 # On exécute le nettoyage du CSV au démarrage de l'application
-cleanup_csv_on_startup("meteo_log.csv")
+cleanup_csv_on_startup(CSV_FILE)
 
 # Changez cette clé pour une chaîne de caractères aléatoire !
 app.secret_key = 'une-cle-secrete-tres-difficile-a-deviner'
@@ -201,9 +208,6 @@ class User(UserMixin):
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
-CSV_FILE = "meteo_log.csv"
-WIND_CSV_FILE = "wind_detail_log.csv" # Fichier pour le vent en temps réel
-PLUVIOMETER_EVENT_LOG = "pluviometer_events.log" # Chemin vers le fichier de log des événements du pluviomètre
 # Calibration du pluviomètre (identique à meteo_capteur.py) - 2024-05-26 (expérimentale)
 # Basé sur le test : 100ml d'eau (10mm) pour 53 basculements.
 MM_PER_TIP = 0.213 # Correction pour correspondre au capteur

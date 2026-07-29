@@ -84,7 +84,7 @@ apt upgrade -y || log_warning "Certains paquets n'ont pas pu être mis à jour."
 # --- 2. Installation des dépendances système ---
 log_info "Installation des dépendances système (Python3, pip, git, i2c-tools)..."
 # On installe les grosses librairies Python via APT pour éviter la compilation
-apt install -y python3 python3-pip git i2c-tools libopenjp2-7 libatlas-base-dev nginx cifs-utils || log_error "Échec de l'installation des dépendances système."
+apt install -y python3 python3-pip git i2c-tools libopenjp2-7 libopenblas-dev nginx cifs-utils || log_error "Échec de l'installation des dépendances système."
 
 
 
@@ -143,7 +143,7 @@ pip install --upgrade pip
 
 echo -e "\e[32m[INFO]\e[0m Installation des dépendances Python restantes..."
 # Installation avec --no-cache-dir pour économiser la RAM sur Pi et éviter les timeouts
-pip install --no-cache-dir numpy pandas matplotlib gpiozero smbus2 adafruit-circuitpython-dht adafruit-circuitpython-bme280 adafruit-circuitpython-as5600 flask flask-login werkzeug requests Pillow gunicorn paho-mqtt
+pip install --no-cache-dir numpy pandas matplotlib gpiozero smbus2 adafruit-circuitpython-dht adafruit-circuitpython-bme280 adafruit-circuitpython-as5600 flask flask-login werkzeug requests Pillow gunicorn paho-mqtt influxdb-client
 if [ $? -ne 0 ]; then echo -e "\e[31m[ERROR]\e[0m Échec de l'installation des dépendances Python."; exit 1; fi
 
 echo -e "\e[32m[INFO]\e[0m Installation des dépendances Python terminée."
@@ -186,12 +186,15 @@ GUNICORN_EXEC="$PROJECT_DIR/venv/bin/gunicorn"
 
 # --- Nettoyage des anciens services ---
 log_info "Nettoyage des anciens services systemd..."
-systemctl disable --now station-meteo.service meteo-capteur.service meteo-web.service satellite-fetcher.service telegram-bot.service &> /dev/null
+systemctl disable --now station-meteo.service meteo-capteur.service meteo-web.service satellite-fetcher.service telegram-bot.service meteo-backup.timer meteo-backup.service meteo-persistence.service &> /dev/null
 rm -f /etc/systemd/system/station-meteo.service
 rm -f /etc/systemd/system/meteo-capteur.service
 rm -f /etc/systemd/system/meteo-web.service
 rm -f /etc/systemd/system/satellite-fetcher.service
 rm -f /etc/systemd/system/telegram-bot.service
+rm -f /etc/systemd/system/meteo-backup.service
+rm -f /etc/systemd/system/meteo-backup.timer
+rm -f /etc/systemd/system/meteo-persistence.service
 log_info "Anciens services nettoyés."
 
 # --- Service 1: meteo_capteur.py ---
@@ -199,6 +202,7 @@ cat <<EOF > /etc/systemd/system/meteo-capteur.service
 [Unit]
 Description=Service de lecture des capteurs meteo
 After=network.target
+Requires=meteo-persistence.service
 
 [Service]
 ExecStart=$PYTHON_EXEC $PROJECT_DIR/meteo_capteur.py
@@ -271,11 +275,60 @@ StandardError=append:$PROJECT_DIR/logs/gunicorn.log
 WantedBy=multi-user.target
 EOF
 
+# --- Service 5: Sauvegarde Samba (OneShot) ---
+cat <<EOF > /etc/systemd/system/meteo-backup.service
+[Unit]
+Description=Service de sauvegarde Samba MeteoPi
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash $PROJECT_DIR/backup_samba.sh
+User=root
+Group=root
+EOF
+
+# --- Timer pour la sauvegarde (Tous les jours à 3h00) ---
+cat <<EOF > /etc/systemd/system/meteo-backup.timer
+[Unit]
+Description=Timer pour la sauvegarde journaliere MeteoPi
+
+[Install]
+WantedBy=timers.target
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+EOF
+
+# --- Service 6: Persistance RAM <-> SD ---
+cat <<EOF > /etc/systemd/system/meteo-persistence.service
+[Unit]
+Description=Persistance des donnees MeteoPi (RAM <-> SD)
+Before=meteo-capteur.service meteo-web.service
+ConditionPathExists=$PROJECT_DIR/data
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Au démarrage : on restaure de la SD vers la RAM
+ExecStart=/bin/bash -c 'mkdir -p $PROJECT_DIR/data_persistent && cp -rp $PROJECT_DIR/data_persistent/. $PROJECT_DIR/data/ || true'
+# À l'arrêt : on sauvegarde de la RAM vers la SD
+ExecStop=/bin/bash -c 'cp -rp $PROJECT_DIR/data/. $PROJECT_DIR/data_persistent/ || true'
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload || log_error "Échec du rechargement des démons systemd."
+systemctl enable --now meteo-persistence.service || log_error "Échec de l'activation de la persistance."
 systemctl enable --now meteo-capteur.service || log_error "Échec de l'activation du service meteo-capteur."
 systemctl enable --now satellite-fetcher.service || log_error "Échec de l'activation du service satellite-fetcher."
 systemctl enable --now meteo-web.service || log_error "Échec de l'activation du service meteo-web."
 systemctl enable --now telegram-bot.service || log_error "Échec de l'activation du service telegram-bot."
+systemctl enable --now meteo-backup.timer || log_error "Échec de l'activation du timer de sauvegarde."
 
 log_info "Correction des permissions du répertoire du projet..."
 # Change la propriété de tout le répertoire au SUDO_USER (ex: 'meteo')

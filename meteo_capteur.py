@@ -2,6 +2,7 @@
 import csv
 import time
 import json
+import os
 from datetime import datetime
 import logging # Ajout pour le logging des événements du pluviomètre
 import smbus2
@@ -11,12 +12,22 @@ import adafruit_dht
 from adafruit_bme280 import basic as adafruit_bme280
 from adafruit_as5600 import AS5600
 import paho.mqtt.client as mqtt
+from influxdb_client import InfluxDBClient, Point, WritePrecision
+from influxdb_client.client.write_api import SYNCHRONOUS
 from gpiozero import Button
-from grove_rgb_lcd import RgbLcd # Import de la nouvelle librairie pour l'écran
+try:
+    from grove_rgb_lcd import RgbLcd 
+except ImportError:
+    RgbLcd = None
+    print("ℹ️ Bibliothèque grove_rgb_lcd non trouvée.")
 
-CSV_FILE = "meteo_log.csv"
-WIND_CSV_FILE = "wind_detail_log.csv" # Nouveau fichier pour le vent en temps réel (3s)
-PLUVIOMETER_EVENT_LOG = "pluviometer_events.log" # Nouveau fichier de log pour les basculements
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+
+CSV_FILE = os.path.join(DATA_DIR, "meteo_log.csv")
+WIND_CSV_FILE = os.path.join(DATA_DIR, "wind_detail_log.csv")
+PLUVIOMETER_EVENT_LOG = os.path.join(DATA_DIR, "pluviometer_events.log")
 CONFIG_FILE = "config.json"
 
 # Configuration du logging pour les événements du pluviomètre
@@ -79,6 +90,24 @@ last_realtime_time = time.time()
 # ---- Initialisation MQTT ----
 mqtt_client = None
 
+# ---- Initialisation InfluxDB ----
+influx_client = None
+
+def setup_influxdb(current_config):
+    if current_config.get("influx_enabled"):
+        try:
+            client = InfluxDBClient(
+                url=current_config.get("influx_url"),
+                token=current_config.get("influx_token"),
+                org=current_config.get("influx_org"),
+                timeout=5000 # Timeout de 5s pour éviter de bloquer la boucle
+            )
+            print(f"✅ InfluxDB connecté à {current_config['influx_url']}")
+            return client
+        except Exception as e:
+            print(f"❌ Erreur de connexion InfluxDB : {e}")
+    return None
+
 def setup_mqtt(current_config):
     global mqtt_client
     if current_config.get("mqtt_enabled"):
@@ -103,6 +132,7 @@ def setup_mqtt(current_config):
 
 config = load_config()
 mqtt_client = setup_mqtt(config)
+influx_client = setup_influxdb(config)
 
 def count_tip():
     """Fonction appelée à chaque basculement de l'auget."""
@@ -161,13 +191,16 @@ if not bme280:
 
 # ---- Initialisation de l'écran LCD ----
 lcd = None
-try:
-    lcd = RgbLcd()
-    lcd.set_rgb(50, 50, 150) # Couleur de fond bleu/violet au démarrage
-    lcd.write("Vitesse vent\nAttente...")
-    print("✅ Écran LCD Grove détecté.")
-except (IOError, OSError):
-    print("ℹ️ Écran LCD non trouvé. Le script continuera sans affichage local.")
+if RgbLcd:
+    try:
+        lcd = RgbLcd()
+        lcd.set_rgb(50, 50, 150) # Couleur de fond bleu/violet au démarrage
+        lcd.write("Vitesse vent\nAttente...")
+        print("✅ Écran LCD Grove détecté.")
+    except (IOError, OSError, TypeError):
+        print("ℹ️ Écran LCD non trouvé. Le script continuera sans affichage local.")
+else:
+    print("ℹ️ Écran LCD ignoré (pilote non chargé).")
 
 # Initialisation du pluviomètre avec un temps de debounce de 100ms
 # pour filtrer les rebonds mécaniques et le bruit.
@@ -293,7 +326,7 @@ def sample_and_log():
     Fonction exécutée toutes les SAMPLE_TIME secondes pour lire les capteurs,
     calculer les valeurs et les enregistrer.
     """
-    global wind_pulse_count, tip_count, last_temp, last_hum, last_pressure, daily_rain, current_day, wind_gust_pulse_max, last_sample_time, config, mqtt_client
+    global wind_pulse_count, tip_count, last_temp, last_hum, last_pressure, daily_rain, current_day, wind_gust_pulse_max, last_sample_time, config, mqtt_client, influx_client
     
     # On configure le timer pour qu'il se relance à la fin de l'exécution
     threading.Timer(SAMPLE_TIME, sample_and_log).start()
@@ -308,6 +341,13 @@ def sample_and_log():
             mqtt_client.disconnect()
         mqtt_client = setup_mqtt(new_config)
     config = new_config
+    
+    # Reconnexion InfluxDB si nécessaire
+    if new_config.get("influx_enabled") and not influx_client:
+        influx_client = setup_influxdb(new_config)
+    elif not new_config.get("influx_enabled") and influx_client:
+        influx_client.close()
+        influx_client = None
 
     temp, hum, pressure = read_sensors()
     
@@ -386,6 +426,29 @@ def sample_and_log():
             mqtt_client.publish(config.get("mqtt_topic", "meteopi/sensors"), json.dumps(mqtt_data))
         except Exception as e:
             print(f"⚠️ Erreur publication MQTT : {e}")
+
+    # --- Envoi InfluxDB ---
+    if influx_client:
+        try:
+            write_api = influx_client.write_api(write_options=SYNCHRONOUS)
+            point = Point("meteo") \
+                .tag("station", "meteopi_1") \
+                .field("temperature", float(temp) if temp is not None else 0.0) \
+                .field("humidity", float(hum) if hum is not None else 0.0) \
+                .field("pressure", float(pressure) if pressure is not None else 0.0) \
+                .field("rain", float(rain_since_last)) \
+                .field("wind_speed", float(wind_speed_kmh)) \
+                .field("wind_gust", float(wind_gust_kmh)) \
+                .field("wind_direction", wind_dir_str) \
+                .time(datetime.utcnow(), WritePrecision.NS)
+            
+            write_api.write(
+                bucket=config.get("influx_bucket"),
+                org=config.get("influx_org"),
+                record=point
+            )
+        except Exception as e:
+            print(f"⚠️ Erreur publication InfluxDB : {e}")
 
     pressure_str = f"📈 {pressure:.1f}hPa" if pressure is not None else ""
     temp_disp = f"{temp:.1f}°C" if temp is not None else "--.-°C"
