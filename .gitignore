@@ -5,3 +5,5 @@ meteopi_card.yaml
 meteopi_card.yml
 station meteo.code-workspace
 station meteo.code-workspace
+__pycache__/meteo_web.cpython-314.pyc
+__pycache__/meteo_capteur.cpython-314.pyc

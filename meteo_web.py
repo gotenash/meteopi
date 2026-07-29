@@ -1053,6 +1053,10 @@ def admin_clear_data():
         # Supprime également le fichier de log des basculements pour la cohérence.
         if os.path.exists(PLUVIOMETER_EVENT_LOG):
             os.remove(PLUVIOMETER_EVENT_LOG)
+
+        # Supprime le fichier de logs détaillés du vent
+        if os.path.exists(WIND_CSV_FILE):
+            os.remove(WIND_CSV_FILE)
             
     except Exception as e:
         print(f"Erreur lors de l'effacement des fichiers de données : {e}")

@@ -39,6 +39,35 @@ logging.basicConfig(
     ]
 )
 
+def rotate_file_if_large(filepath, max_lines=28800):
+    """
+    Limite le nombre de lignes d'un fichier log/CSV pour éviter de saturer le stockage.
+    Ne procède que si la taille du fichier dépasse un seuil (~1 Mo).
+    """
+    try:
+        if not os.path.exists(filepath):
+            return
+        # Pour éviter de lire/écrire à chaque appel, on ne procède que si la taille
+        # dépasse ~1 Mo (environ 30 000 lignes de vent détaillé)
+        if os.path.getsize(filepath) < 1000000:
+            return
+            
+        with open(filepath, 'r', newline='', encoding='utf-8') as f:
+            lines = f.readlines()
+            
+        if len(lines) > max_lines:
+            header = lines[0]
+            # On conserve l'en-tête et les dernières lignes
+            new_lines = [header] + lines[-max_lines:]
+            
+            temp_path = filepath + ".tmp"
+            with open(temp_path, 'w', newline='', encoding='utf-8') as f:
+                f.writelines(new_lines)
+            os.replace(temp_path, filepath)
+            print(f"🔄 Fichier {os.path.basename(filepath)} tourné : {len(lines)} -> {len(new_lines)} lignes.")
+    except Exception as e:
+        print(f"⚠️ Erreur lors de la rotation de {filepath} : {e}")
+
 def load_config():
     """Charge la configuration depuis config.json."""
     try:
@@ -456,6 +485,9 @@ def sample_and_log():
     print(f"[{now}] 🌡 {temp_disp}  💧 {hum_disp}  {pressure_str} 🌧️ {rain_since_last:.2f}mm 💨 {wind_speed_kmh:.1f} km/h ({wind_dir_str})")
 
     # La mise à jour de l'écran LCD est maintenant gérée par update_lcd_realtime()
+
+    # Rotation automatique du fichier de log détaillé du vent
+    rotate_file_if_large(WIND_CSV_FILE)
 
 def update_lcd_realtime():
     """Met à jour l'écran LCD toutes les 3s pour une réactivité temps réel."""
