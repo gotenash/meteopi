@@ -5,9 +5,10 @@ import csv
 import shutil
 import os
 
-CSV_FILE = "meteo_log.csv"
-BACKUP_FILE = "meteo_log.csv.bak"
-TEMP_FILE = "meteo_log_fixed.csv"
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+CSV_FILE = os.path.join(DATA_DIR, "meteo_log.csv")
+BACKUP_FILE = os.path.join(DATA_DIR, "meteo_log.csv.bak")
+TEMP_FILE = os.path.join(DATA_DIR, "meteo_log_fixed.csv")
 
 def repair_csv():
     print(f"--- Démarrage de la réparation de {CSV_FILE} ---")

@@ -7,3 +7,5 @@ station meteo.code-workspace
 station meteo.code-workspace
 __pycache__/meteo_web.cpython-314.pyc
 __pycache__/meteo_capteur.cpython-314.pyc
+__pycache__/reparer_csv.cpython-314.pyc
+__pycache__/telegram_bot.cpython-314.pyc

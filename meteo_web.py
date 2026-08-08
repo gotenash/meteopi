@@ -240,11 +240,14 @@ def generate_hourly_graph_base64(input_df, filter_recent=True, title="Données m
         forty_eight_hours_ago = datetime.now() - timedelta(hours=48)
         df = df[df['time'] > forty_eight_hours_ago]
 
+    if df.empty:
+        return None
+
     df.set_index('time', inplace=True)
 
     # Agréger les données par heure
     # Moyenne pour la température et l'humidité, somme pour la pluie
-    df_hourly = df.resample('H').agg({'temp': 'mean', 'hum': 'mean', 'rain': 'sum'})
+    df_hourly = df.resample('h').agg({'temp': 'mean', 'hum': 'mean', 'rain': 'sum'})
     df_hourly.dropna(subset=['temp', 'hum'], how='all', inplace=True) # Supprimer les heures sans données
 
     if df_hourly.empty:

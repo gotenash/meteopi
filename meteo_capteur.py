@@ -137,6 +137,12 @@ def setup_influxdb(current_config):
             print(f"❌ Erreur de connexion InfluxDB : {e}")
     return None
 
+def on_mqtt_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print("✅ MQTT connecté avec succès au broker.")
+    else:
+        print(f"❌ Échec de la connexion MQTT (code: {rc})")
+
 def setup_mqtt(current_config):
     global mqtt_client
     if current_config.get("mqtt_enabled"):
@@ -148,15 +154,17 @@ def setup_mqtt(current_config):
                 # Ancienne version de paho-mqtt
                 client = mqtt.Client()
             
+            client.on_connect = on_mqtt_connect
+            
             if current_config.get("mqtt_user"):
                 client.username_pw_set(current_config["mqtt_user"], current_config["mqtt_password"])
             
-            client.connect(current_config.get("mqtt_broker", "localhost"), int(current_config.get("mqtt_port", 1883)), 60)
             client.loop_start()
-            print(f"✅ MQTT connecté au broker {current_config['mqtt_broker']}")
+            client.connect_async(current_config.get("mqtt_broker", "localhost"), int(current_config.get("mqtt_port", 1883)), 60)
+            print(f"🔄 MQTT connexion en arrière-plan vers {current_config['mqtt_broker']} initiée...")
             return client
         except Exception as e:
-            print(f"❌ Erreur de connexion MQTT : {e}")
+            print(f"❌ Erreur d'initialisation MQTT : {e}")
     return None
 
 config = load_config()
@@ -438,46 +446,41 @@ def sample_and_log():
         writer.writerow([now, temp_val, hum_val, pressure_val, f"{rain_since_last:.4f}", f"{wind_speed_kmh:.2f}", f"{wind_gust_kmh:.2f}", wind_dir_str])
         f.flush()
 
-    # --- Envoi MQTT ---
-    if mqtt_client:
-        try:
-            mqtt_data = {
-                "temperature": round(temp, 2) if temp is not None else None,
-                "humidity": round(hum, 1) if hum is not None else None,
-                "pressure": round(pressure, 1) if pressure is not None else None,
-                "rain_since_last": round(rain_since_last, 4),
-                "daily_rain": round(daily_rain, 2),
-                "wind_speed": round(wind_speed_kmh, 1),
-                "wind_gust": round(wind_gust_kmh, 1),
-                "wind_direction": wind_dir_str,
-                "timestamp": now
-            }
-            mqtt_client.publish(config.get("mqtt_topic", "meteopi/sensors"), json.dumps(mqtt_data))
-        except Exception as e:
-            print(f"⚠️ Erreur publication MQTT : {e}")
+    # --- Publication réseau asynchrone (non bloquante) ---
+    def publish_network():
+        # --- Envoi MQTT ---
+        if mqtt_client:
+            try:
+                mqtt_data = {
+                    "temperature": round(temp, 2) if temp is not None else None,
+                    "humidity": round(hum, 1) if hum is not None else None,
+                    "pressure": round(pressure, 1) if pressure is not None else None,
+                    "rain_since_last": round(rain_since_last, 4),
+                    "daily_rain": round(daily_rain, 2),
+                    "wind_speed": round(wind_speed_kmh, 1),
+                    "wind_gust": round(wind_gust_kmh, 1),
+                    "wind_direction": wind_dir_str,
+                    "timestamp": now
+                }
+                mqtt_client.publish(config.get("mqtt_topic", "meteopi/sensors"), json.dumps(mqtt_data))
+            except Exception as e:
+                print(f"⚠️ Erreur publication MQTT : {e}")
 
-    # --- Envoi InfluxDB ---
-    if influx_client:
-        try:
-            write_api = influx_client.write_api(write_options=SYNCHRONOUS)
-            point = Point("meteo") \
-                .tag("station", "meteopi_1") \
-                .field("temperature", float(temp) if temp is not None else 0.0) \
-                .field("humidity", float(hum) if hum is not None else 0.0) \
-                .field("pressure", float(pressure) if pressure is not None else 0.0) \
-                .field("rain", float(rain_since_last)) \
-                .field("wind_speed", float(wind_speed_kmh)) \
-                .field("wind_gust", float(wind_gust_kmh)) \
-                .field("wind_direction", wind_dir_str) \
-                .time(datetime.utcnow(), WritePrecision.NS)
-            
-            write_api.write(
-                bucket=config.get("influx_bucket"),
-                org=config.get("influx_org"),
-                record=point
-            )
-        except Exception as e:
-            print(f"⚠️ Erreur publication InfluxDB : {e}")
+        # --- Envoi InfluxDB ---
+        if influx_client:
+            try:
+                write_api = influx_client.write_api(write_options=SYNCHRONOUS)
+                point = Point("meteo")                     .tag("station", "meteopi_1")                     .field("temperature", float(temp) if temp is not None else 0.0)                     .field("humidity", float(hum) if hum is not None else 0.0)                     .field("pressure", float(pressure) if pressure is not None else 0.0)                     .field("rain", float(rain_since_last))                     .field("wind_speed", float(wind_speed_kmh))                     .field("wind_gust", float(wind_gust_kmh))                     .field("wind_direction", wind_dir_str)                     .time(datetime.utcnow(), WritePrecision.NS)
+                
+                write_api.write(
+                    bucket=config.get("influx_bucket"),
+                    org=config.get("influx_org"),
+                    record=point
+                )
+            except Exception as e:
+                print(f"⚠️ Erreur publication InfluxDB : {e}")
+
+    threading.Thread(target=publish_network, daemon=True).start()
 
     pressure_str = f"📈 {pressure:.1f}hPa" if pressure is not None else ""
     temp_disp = f"{temp:.1f}°C" if temp is not None else "--.-°C"

@@ -186,7 +186,7 @@ GUNICORN_EXEC="$PROJECT_DIR/venv/bin/gunicorn"
 
 # --- Nettoyage des anciens services ---
 log_info "Nettoyage des anciens services systemd..."
-systemctl disable --now station-meteo.service meteo-capteur.service meteo-web.service satellite-fetcher.service telegram-bot.service meteo-backup.timer meteo-backup.service meteo-persistence.service &> /dev/null
+systemctl disable --now station-meteo.service meteo-capteur.service meteo-web.service satellite-fetcher.service telegram-bot.service meteo-backup.timer meteo-backup.service meteo-persistence.service meteo-wifi-watchdog.service &> /dev/null
 rm -f /etc/systemd/system/station-meteo.service
 rm -f /etc/systemd/system/meteo-capteur.service
 rm -f /etc/systemd/system/meteo-web.service
@@ -195,6 +195,7 @@ rm -f /etc/systemd/system/telegram-bot.service
 rm -f /etc/systemd/system/meteo-backup.service
 rm -f /etc/systemd/system/meteo-backup.timer
 rm -f /etc/systemd/system/meteo-persistence.service
+rm -f /etc/systemd/system/meteo-wifi-watchdog.service
 log_info "Anciens services nettoyés."
 
 # --- Service 1: meteo_capteur.py ---
@@ -322,6 +323,24 @@ Group=root
 WantedBy=multi-user.target
 EOF
 
+# --- Service 7: Wifi Watchdog ---
+cat <<EOF > /etc/systemd/system/meteo-wifi-watchdog.service
+[Unit]
+Description=Service de surveillance et reconnexion Wifi MeteoPi
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash $PROJECT_DIR/wifi_watchdog.sh
+Restart=always
+RestartSec=10
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload || log_error "Échec du rechargement des démons systemd."
 systemctl enable --now meteo-persistence.service || log_error "Échec de l'activation de la persistance."
 systemctl enable --now meteo-capteur.service || log_error "Échec de l'activation du service meteo-capteur."
@@ -329,6 +348,7 @@ systemctl enable --now satellite-fetcher.service || log_error "Échec de l'activ
 systemctl enable --now meteo-web.service || log_error "Échec de l'activation du service meteo-web."
 systemctl enable --now telegram-bot.service || log_error "Échec de l'activation du service telegram-bot."
 systemctl enable --now meteo-backup.timer || log_error "Échec de l'activation du timer de sauvegarde."
+systemctl enable --now meteo-wifi-watchdog.service || log_error "Échec de l'activation du service Wifi Watchdog."
 
 log_info "Correction des permissions du répertoire du projet..."
 # Change la propriété de tout le répertoire au SUDO_USER (ex: 'meteo')

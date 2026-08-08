@@ -24,7 +24,10 @@ A complete, robust, and autonomous weather station project based on Raspberry Pi
     *   Hourly and daily rain accumulation charts.
     *   Min/Max statistics calculated for Day, Week, and Month.
 *   **SD Card Wear Mitigation (Persistence)**: System data is logged to a RAM-based directory (`data/`) and automatically synced to the SD card (`data_persistent/`) upon startup/shutdown and backup tasks to prolong Raspberry Pi SD card life.
-*   **Automated Samba Network Backups**: An automated systemd timer backing up datasets (`meteo_log.csv`, `wind_detail_log.csv`) and configurations (`config.json`) daily to a network share (SMB/Samba).
+*   **Automated Samba Network Backups**: An automated systemd timer backing up datasets (`meteo_log.csv`, `wind_detail_log.csv`) and configurations (`config.json`) daily to a network share (SMB/Samba), with built-in reachability checks to prevent system hangs.
+*   **Network Resilience & Auto-Reconnection**:
+    *   Asynchronous MQTT and InfluxDB publication threads ensure that weather data collection continues uninterrupted even during internet outages.
+    *   A dedicated Wifi Watchdog background daemon automatically reconnects the Raspberry Pi to the Wifi access point if the connection drops.
 *   **Satellite Weather Animation**: Downloads cloud cover tiles from the OpenWeatherMap API, stitches them into a 3x3 grid, and generates dynamic animated overlays.
 *   **Local LCD Display**: Shows real-time metrics on a Grove RGB LCD with a temperature-reactive background color.
 *   **Integrations**:
@@ -113,6 +116,8 @@ The project includes a comprehensive installer (`setup.sh`) which automates APT 
     Restores the logged files from the SD card to the RAM disk at boot, and flushes them back on shutdown to prevent storage corruption and excessive write cycles.
 *   **Samba Backup Timer (`meteo-backup.timer`)**:
     Runs the backup service daily at `03:00` using [backup_samba.sh](file:///c:/Users/ash/Documents/GitHub/meteopi/backup_samba.sh).
+*   **Wifi Connection Watchdog (`meteo-wifi-watchdog.service`)**:
+    Runs [wifi_watchdog.sh](file:///c:/Users/ash/Documents/GitHub/meteopi/wifi_watchdog.sh) in the background to monitor connectivity and automatically reconnect to the router if connection drops.
 
 ### Utility & Diagnostic Scripts
 

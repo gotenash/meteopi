@@ -24,7 +24,10 @@ Un projet complet, robuste et autonome de station météo basé sur Raspberry Pi
     *   Graphiques de cumul de pluie journalier et horaire.
     *   Statistiques Min/Max (Jour, Semaine, Mois).
 *   **Préservation de la carte SD (Persistance en RAM)** : Les données actives sont écrites dans un dossier temporaire en RAM (`data/`) puis synchronisées automatiquement sur la carte SD (`data_persistent/`) au démarrage, à l'extinction et lors des sauvegardes afin de prolonger la durée de vie de la carte SD du Raspberry Pi.
-*   **Sauvegardes réseau Samba automatisées** : Un service systemd planifié sauvegarde chaque jour les jeux de données (`meteo_log.csv`, `wind_detail_log.csv`) et la configuration (`config.json`) vers un partage réseau local (SMB/Windows Share).
+*   **Sauvegardes réseau Samba automatisées** : Un service systemd planifié sauvegarde chaque jour les jeux de données (`meteo_log.csv`, `wind_detail_log.csv`) et la configuration (`config.json`) vers un partage réseau local (SMB/Windows Share), avec une détection automatique de disponibilité de l'hôte pour éviter les blocages système.
+*   **Résilience Réseau & Reconnexion Auto** :
+    *   Les publications MQTT et InfluxDB sont asynchrones (threads d'arrière-plan), permettant au script de capture de continuer ses mesures et de les enregistrer localement sans interruption lors d'une panne d'internet.
+    *   Un watchdog Wifi autonome surveille continuellement l'interface et rétablit la connexion Wifi de manière automatique en cas de déconnexion.
 *   **Radar Satellite Animé** : Télécharge automatiquement les tuiles de couverture nuageuse depuis l'API OpenWeatherMap, assemble une grille 3x3 et génère un overlay GIF animé.
 *   **Affichage local LCD** : Affiche les métriques sur un écran LCD Grove RGB avec une couleur de fond variant selon la température.
 *   **Intégrations matérielles et cloud** :
@@ -113,6 +116,8 @@ Le projet intègre un installateur complet (`setup.sh`) qui automatise l'install
     Restaure les fichiers de données de la carte SD vers la RAM au démarrage et les réécrit sur la carte SD lors de l'arrêt afin de minimiser l'usure de la carte.
 *   **Timer de Sauvegarde Samba (`meteo-backup.timer`)** :
     Lance quotidiennement à `03h00` le script [backup_samba.sh](file:///c:/Users/ash/Documents/GitHub/meteopi/backup_samba.sh) pour copier les données sur le réseau.
+*   **Watchdog Connexion Wifi (`meteo-wifi-watchdog.service`)** :
+    Exécute le script [wifi_watchdog.sh](file:///c:/Users/ash/Documents/GitHub/meteopi/wifi_watchdog.sh) en tâche de fond pour surveiller l'état de l'interface Wifi et reconnecter le Raspberry Pi en cas de coupure Wifi.
 
 ### Outils & Scripts de Diagnostic
 

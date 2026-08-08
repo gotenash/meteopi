@@ -34,6 +34,33 @@ mkdir -p "$PERSISTENT_DIR"
 echo "📦 Synchronisation locale RAM -> SD..."
 cp -rp "$PROJECT_DIR/data/." "$PERSISTENT_DIR/"
 
+# --- NOUVEAU : Vérification de la disponibilité de l'hôte Samba ---
+# Extraction du nom d'hôte ou de l'IP depuis l'URL de partage Samba
+SMB_HOST=$(echo "$SMB_SHARE" | sed -E 's/^\/\/([^/]+).*/\\1/')
+
+if [ -n "$SMB_HOST" ]; then
+    echo "🔍 Vérification de la connectivité réseau vers l'hôte Samba ($SMB_HOST)..."
+    
+    # 1. Tentative de ping rapide (2 secondes max)
+    ping -c 1 -W 2 "$SMB_HOST" >/dev/null 2>&1
+    PING_STATUS=$?
+    
+    # 2. Si le ping échoue, vérification du port SMB 445 (2 secondes max)
+    SMB_PORT_STATUS=1
+    if [ $PING_STATUS -ne 0 ]; then
+        timeout 2 bash -c "echo > /dev/tcp/$SMB_HOST/445" >/dev/null 2>&1
+        SMB_PORT_STATUS=$?
+    fi
+    
+    # Si les deux échouent, l'hôte est injoignable
+    if [ $PING_STATUS -ne 0 ] && [ $SMB_PORT_STATUS -ne 0 ]; then
+        echo "⚠️ L'hôte Samba ($SMB_HOST) est injoignable (ping et port 445 en échec)."
+        echo "   La sauvegarde sur le partage réseau est annulée."
+        echo "   La synchronisation locale RAM -> SD s'est toutefois déroulée avec succès."
+        exit 0 # Sortie propre (code 0) pour ne pas mettre le service systemd en échec
+    fi
+fi
+
 # 1. Création du point de montage si inexistant
 if [ ! -d "$MOUNT_POINT" ]; then
     echo "📂 Création du point de montage $MOUNT_POINT"

@@ -6,7 +6,8 @@ import requests
 from datetime import datetime
 
 CONFIG_FILE = "config.json"
-CSV_FILE = "meteo_log.csv"
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+CSV_FILE = os.path.join(DATA_DIR, "meteo_log.csv")
 SEND_INTERVAL = 3600  # 1 heure en secondes
 
 def load_config():
